@@ -42,7 +42,8 @@ setup(name='qupulse',
           'VISA': ['pyvisa'],
           'tabor-instruments': ['pytabor>=1.0.1', 'teawg'],
           'Faster-fractions': ['gmpy2'],
-          'tektronix': 'tek_awg>=0.2.1'
+          'tektronix': 'tek_awg>=0.2.1',
+          'zurich-instruments': ['zhinst']
       },
       test_suite="tests",
       classifiers=[
