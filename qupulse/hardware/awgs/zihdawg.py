@@ -1,6 +1,6 @@
 from pathlib import Path
 import functools
-from typing import Tuple, Set, Callable, Optional, Dict, NamedTuple, Iterator
+from typing import Tuple, Set, Callable, Optional, Dict, NamedTuple, Iterator, Sequence
 from collections import OrderedDict
 from enum import Enum
 import weakref
@@ -25,7 +25,25 @@ from qupulse._program.waveforms import Waveform
 from qupulse.hardware.awgs.base import AWG, ChannelNotFoundException
 from qupulse.hardware.util import get_sample_times
 
+class HDAWGChannelGrouping(Enum):
+    """How many independent sequencers should run on the AWG and how the outputs should be grouped by sequencer."""
+    CHAN_GROUP_4x2 = 0  # 4x2 with HDAWG8; 2x2 with HDAWG4.  /dev.../awgs/0..3/
+    CHAN_GROUP_2x4 = 1  # 2x4 with HDAWG8; 1x4 with HDAWG4.  /dev.../awgs/0 & 2/
+    CHAN_GROUP_1x8 = 2  # 1x8 with HDAWG8.                   /dev.../awgs/0/
 
+
+class HDAWGVoltageRange(Enum):
+    """All available voltage ranges for the HDAWG wave outputs. Define maximum output voltage."""
+    RNG_5V = 5
+    RNG_4V = 4
+    RNG_3V = 3
+    RNG_2V = 2
+    RNG_1V = 1
+    RNG_800mV = 0.8
+    RNG_600mV = 0.6
+    RNG_400mV = 0.4
+    RNG_200mV = 0.2
+    
 def valid_channel(function_object):
     """Check if channel is a valid AWG channels. Expects channel to be 2nd argument after self."""
     @functools.wraps(function_object)
@@ -50,7 +68,8 @@ class HDAWGRepresentation:
                  data_server_port: int = 8004,
                  api_level_number: int = 6,
                  reset: bool = False,
-                 timeout: float = 20) -> None:
+                 timeout: float = 120,
+                 channel_grouping = HDAWGChannelGrouping.CHAN_GROUP_4x2) -> None:
         """
         :param device_serial:     Device serial that uniquely identifies this device to the LabOne data server
         :param device_interface:  Either '1GbE' for ethernet or 'USB'
@@ -64,6 +83,8 @@ class HDAWGRepresentation:
         zhinst.utils.api_server_version_check(self.api_session)  # Check equal data server and api version.
         self.api_session.connectDevice(device_serial, device_interface)
         self._dev_ser = device_serial
+        self.channel_grouping =  channel_grouping
+        self.sample_rate_index = 0
 
         if reset:
             # Create a base configuration: Disable all available outputs, awgs, demods, scopes,...
@@ -71,10 +92,21 @@ class HDAWGRepresentation:
 
         self._initialize()
 
-        self._channel_pair_AB = HDAWGChannelPair(self, (1, 2), str(self.serial) + '_AB', timeout)
-        self._channel_pair_CD = HDAWGChannelPair(self, (3, 4), str(self.serial) + '_CD', timeout)
-        self._channel_pair_EF = HDAWGChannelPair(self, (5, 6), str(self.serial) + '_EF', timeout)
-        self._channel_pair_GH = HDAWGChannelPair(self, (7, 8), str(self.serial) + '_GH', timeout)
+        if channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
+            self.number_of_channel_groups = 4
+            
+            self._channel_pair_AB = HDAWGChannelPair(self, (1, 2), str(self.serial) + '_AB', timeout)
+            self._channel_pair_CD = HDAWGChannelPair(self, (3, 4), str(self.serial) + '_CD', timeout)
+            self._channel_pair_EF = HDAWGChannelPair(self, (5, 6), str(self.serial) + '_EF', timeout)
+            self._channel_pair_GH = HDAWGChannelPair(self, (7, 8), str(self.serial) + '_GH', timeout)
+            self._channel_pair_full = None
+        else:
+            self.number_of_channel_groups = 1
+            self._channel_pair_full = HDAWGChannelPair(self, range(1,9), str(self.serial) + '_full', timeout)
+            
+    @property
+    def channel_pair_full(self) -> 'HDAWGChannelPair':
+        return self._channel_pair_full
 
     @property
     def channel_pair_AB(self) -> 'HDAWGChannelPair':
@@ -102,9 +134,13 @@ class HDAWGRepresentation:
 
     def _initialize(self) -> None:
         settings = []
-        settings.append(['/{}/system/awg/channelgrouping'.format(self.serial),
-                         HDAWGChannelGrouping.CHAN_GROUP_4x2.value])
-        settings.append(['/{}/awgs/*/time'.format(self.serial), 0])  # Maximum sampling rate.
+        if self.channel_grouping==HDAWGChannelGrouping.CHAN_GROUP_4x2:
+            settings.append(['/{}/system/awg/channelgrouping'.format(self.serial),
+                             HDAWGChannelGrouping.CHAN_GROUP_4x2.value])
+        else:
+            settings.append(['/{}/system/awg/channelgrouping'.format(self.serial),
+                             HDAWGChannelGrouping.CHAN_GROUP_1x8.value])
+        settings.append(['/{}/awgs/*/time'.format(self.serial), self.sample_rate_index]) 
         settings.append(['/{}/sigouts/*/range'.format(self.serial), HDAWGVoltageRange.RNG_1V.value])
         settings.append(['/{}/awgs/*/outputs/*/amplitude'.format(self.serial), 1.0])  # Default amplitude factor 1.0
         settings.append(['/{}/awgs/*/outputs/*/modulation/mode'.format(self.serial), HDAWGModulationMode.OFF.value])
@@ -123,10 +159,13 @@ class HDAWGRepresentation:
     def reset(self) -> None:
         zhinst.utils.disable_everything(self.api_session, self.serial)
         self._initialize()
-        self.channel_pair_AB.clear()
-        self.channel_pair_CD.clear()
-        self.channel_pair_EF.clear()
-        self.channel_pair_GH.clear()
+        if self.channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
+            self.channel_pair_AB.clear()
+            self.channel_pair_CD.clear()
+            self.channel_pair_EF.clear()
+            self.channel_pair_GH.clear()
+        else:
+            self.channel_pair_full.clear()
 
     @valid_channel
     def offset(self, channel: int, voltage: float = None) -> float:
@@ -158,12 +197,15 @@ class HDAWGRepresentation:
 
     def get_status_table(self):
         """Return node tree of instrument with all important settings, as well as each channel group as tuple."""
-        return (self.api_session.get('/{}/*'.format(self.serial)),
-                self.channel_pair_AB.awg_module.get('awgModule/*'),
+        session_data = (self.api_session.get('/{}/*'.format(self.serial)), )
+        if self.channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
+            return session_data + (self.channel_pair_AB.awg_module.get('awgModule/*'),
                 self.channel_pair_CD.awg_module.get('awgModule/*'),
                 self.channel_pair_EF.awg_module.get('awgModule/*'),
                 self.channel_pair_GH.awg_module.get('awgModule/*'))
-
+        else:
+            return session_data + (self.channel_pair_full.awg_module.get('awgModule/*'), )
+                
 
 class HDAWGTriggerOutSource(Enum):
     """Assign a signal to a marker output. This is per AWG Core."""
@@ -185,26 +227,6 @@ class HDAWGTriggerOutSource(Enum):
     TRIG_IN_8 = 15  # Trigger output assigned to trigger inout 8.
     HIGH = 17 # Trigger output is set to high.
     LOW = 18 # Trigger output is set to low.
-
-
-class HDAWGChannelGrouping(Enum):
-    """How many independent sequencers should run on the AWG and how the outputs should be grouped by sequencer."""
-    CHAN_GROUP_4x2 = 0  # 4x2 with HDAWG8; 2x2 with HDAWG4.  /dev.../awgs/0..3/
-    CHAN_GROUP_2x4 = 1  # 2x4 with HDAWG8; 1x4 with HDAWG4.  /dev.../awgs/0 & 2/
-    CHAN_GROUP_1x8 = 2  # 1x8 with HDAWG8.                   /dev.../awgs/0/
-
-
-class HDAWGVoltageRange(Enum):
-    """All available voltage ranges for the HDAWG wave outputs. Define maximum output voltage."""
-    RNG_5V = 5
-    RNG_4V = 4
-    RNG_3V = 3
-    RNG_2V = 2
-    RNG_1V = 1
-    RNG_800mV = 0.8
-    RNG_600mV = 0.6
-    RNG_400mV = 0.4
-    RNG_200mV = 0.2
 
 
 class HDAWGModulationMode(Enum):
@@ -233,13 +255,13 @@ class HDAWGChannelPair(AWG):
     """
 
     def __init__(self, hdawg_device: HDAWGRepresentation,
-                 channels: Tuple[int, int],
+                 channels: Sequence[int],
                  identifier: str,
                  timeout: float) -> None:
         super().__init__(identifier)
         self._device = weakref.proxy(hdawg_device)
 
-        if channels not in ((1, 2), (3, 4), (5, 6), (7, 8)):
+        if channels not in ((1, 2), (3, 4), (5, 6), (7, 8), range(1,9)):
             raise HDAWGValueError('Invalid channel pair: {}'.format(channels))
         self._channels = channels
         self._timeout = timeout
@@ -252,24 +274,24 @@ class HDAWGChannelPair(AWG):
         self.device.api_session.setInt('/{}/awgs/{:d}/single'.format(self.device.serial, self.awg_group_index), 1)
 
         self._wave_manager = HDAWGWaveManager(self.user_directory, self.identifier)
-        self._program_manager = HDAWGProgramManager(self._wave_manager)
+        self._program_manager = HDAWGProgramManager(self._wave_manager, number_of_channels = len(channels))
         self._current_program = None  # Currently armed program.
 
     @property
     def num_channels(self) -> int:
         """Number of channels"""
-        return 2
+        return len(self._channels)
 
     @property
     def num_markers(self) -> int:
         """Number of marker channels"""
-        return 2  # Actually 4 available.
+        return len(self._channels)  # Actually 2*len(self._channels) available.
 
     def upload(self, name: str,
                program: Loop,
                channels: Tuple[Optional[ChannelID], Optional[ChannelID]],
                markers: Tuple[Optional[ChannelID], Optional[ChannelID]],
-               voltage_transformation: Tuple[Callable, Callable],
+               voltage_transformation: Tuple[Callable],
                force: bool = False) -> None:
         """Upload a program to the AWG.
 
@@ -316,17 +338,24 @@ class HDAWGChannelPair(AWG):
                         sample_rate=q_sample_rate)
 
         # TODO: Implement offset handling like in tabor driver.
+        channel_ranges = tuple([self._device.range(self._channels[ii]) for ii in range(self.num_channels)])
+        print(f'HDAWGChannelPair: call _program_manager.register')
         self._program_manager.register(name,
                                        program,
                                        channels,
                                        markers,
                                        voltage_transformation,
                                        q_sample_rate,
-                                       (self._device.range(self._channels[0]), self._device.range(self._channels[1])),
-                                       (0, 0),
+                                       channel_ranges,
+                                       (0,)*self.num_channels,
                                        force)
 
+        print(f'HDAWGChannelPair: call assemble_sequencer_program')
         awg_sequence = self._program_manager.assemble_sequencer_program()
+        print(f'HDAWGChannelPair: call _upload_sourcestring')
+        print('-----------')
+        print(awg_sequence)
+        print('-----------')
         self._upload_sourcestring(awg_sequence)
 
     def _upload_sourcestring(self, sourcestring: str) -> None:
@@ -368,7 +397,7 @@ class HDAWGChannelPair(AWG):
             logger.info("{} awgModule/progress: {:.2f}".format(i, self.awg_module.getDouble('awgModule/progress')))
             i = i + 1
             if time.time() - time_start > self._timeout:
-                raise HDAWGTimeoutError("Upload timeout out")
+                raise HDAWGTimeoutError("Upload timeout out after {self._timeout} seconds")
         logger.info("{} awgModule/progress: {:.2f}".format(i, self.awg_module.getDouble('awgModule/progress')))
 
         if self.awg_module.getInt('awgModule/elf/status') == 0:
@@ -441,7 +470,10 @@ class HDAWGChannelPair(AWG):
     @property
     def awg_group_index(self) -> int:
         """AWG node group index assuming 4x2 channel grouping. Then 0...3 will give appropriate index of group."""
-        return self._channels[0] // 2
+        if self.num_channels==2:
+            return self._channels[0] // 2
+        else:
+            return 0
 
     @property
     def device(self) -> HDAWGRepresentation:
@@ -563,7 +595,8 @@ class HDAWGWaveManager:
         """Scale voltage pulse data to dimensionless -1..1 amplitude of full range. If out of range throw error."""
         # TODO: Is offset included or excluded from rng?
         if np.any(np.abs(volt-offset) > rng):
-            raise HDAWGValueError('Voltage out of range')
+            max_volt = np.max(np.abs(volt-offset))
+            raise HDAWGValueError(f'Voltage {max_volt} out of range {rng}')
         return (volt-offset)/rng
 
     def register(self, waveform: Waveform,
@@ -571,19 +604,23 @@ class HDAWGWaveManager:
                  markers: Tuple[Optional[ChannelID], Optional[ChannelID]],
                  voltage_transformation: Tuple[Callable, Callable],
                  sample_rate: TimeType,
-                 output_range: Tuple[float, float],
-                 output_offset: Tuple[float, float],
+                 output_range: Tuple[float],
+                 output_offset: Tuple[float],
                  overwrite: bool = False) -> Tuple[str, Optional[str]]:
         """Return waveform name and optionally marker name if waveform is known. Register waveform in memory and save to
         disk otherwise. If hash of newly sampled marker or waveform data matches previously sampled data, return
         previously known data."""
-        name = self.generate_name(waveform)
-        if name in self._known_waveforms:
-            return self._known_waveforms[name].wave_name, self._known_waveforms[name].marker_name
+        name = self.generate_name(waveform) + str(channels[0])
+        #print(f'generated name: {name}')
+        #if name in self._known_waveforms:
+        #    return self._known_waveforms[name].wave_name, self._known_waveforms[name].marker_name
 
         sample_times, n_samples = get_sample_times(waveform, sample_rate_in_GHz=sample_rate)
 
-        amplitude = np.zeros((n_samples, 2), dtype=float)
+        number_of_channels = len(channels)
+        if number_of_channels>1:
+            warnings.warn('not tested?')
+        amplitude = np.zeros((n_samples, number_of_channels), dtype=float)
         for idx, chan in enumerate(channels):
             if chan is not None:
                 voltage = voltage_transformation[idx](waveform.get_sampled(chan, sample_times))
@@ -591,16 +628,24 @@ class HDAWGWaveManager:
 
         # Reuse sampled data, if available.
         amplitude_hash = self.calc_hash(amplitude)
-        wave_name = self.generate_wave_name(amplitude)
-
-        if amplitude_hash in self._by_data:
-            wave_name = self._by_data[amplitude_hash]
+        
+        if np.any([chan is not  None for chan in channels]):
+            
+            wave_name = self.generate_wave_name(amplitude)
+    
+    
+            print(f'wave_name {wave_name} hash {amplitude_hash}')
+            
+            if amplitude_hash in self._by_data:
+                wave_name = self._by_data[amplitude_hash]
+            else:
+                self._by_data[amplitude_hash] = wave_name
+                self.to_file(wave_name, amplitude, overwrite=overwrite)
         else:
-            self._by_data[amplitude_hash] = wave_name
-            self.to_file(wave_name, amplitude, overwrite=overwrite)
+            wave_name = None
 
-        if markers[0] is not None or markers[1] is not None:
-            marker_output = np.zeros((n_samples, 2), dtype=np.uint8)
+        if np.any([marker is not None for marker in markers]):
+            marker_output = np.zeros((n_samples, number_of_channels), dtype=np.uint8)
             for idx, marker in enumerate(markers):
                 if marker is not None:
                     marker_output[:, idx] = waveform.get_sampled(marker, sample_times) != 0
@@ -620,6 +665,37 @@ class HDAWGWaveManager:
         self._known_waveforms[name] = self.WaveformEntry(waveform, wave_name, marker_name)
         return wave_name, marker_name
 
+    def register_single_channels(self, waveform: Waveform,
+                     channels: Tuple[Optional[ChannelID], Optional[ChannelID]],
+                     markers: Tuple[Optional[ChannelID], Optional[ChannelID]],
+                     voltage_transformations: Tuple[Callable, Callable],
+                     sample_rate: TimeType,
+                     output_range: Tuple[float],
+                     output_offset: Tuple[float],
+                     overwrite: bool = False):
+        
+        registered_names = []
+        for idx, channel in enumerate(channels):
+            print(f'### register template channel {channel} to physical channel {idx+1}')
+            qupulse_channel_name=channel
+            qupulse_marker_name=markers[idx]
+            zi_channel_idx=idx+1
+            
+            if qupulse_channel_name is None and qupulse_marker_name is None:
+                continue
+                #registered_names.append( (None, None, zi_channel_idx, qupulse_channel_name))
+                
+            marker=markers[idx]
+            (wave_name, marker_name)=self.register(waveform, (channel,), markers=(marker,), voltage_transformation=(voltage_transformations[idx], ),
+                                  sample_rate = sample_rate, output_range=output_range , output_offset=output_offset)
+            print(f' registered: {wave_name}, {marker_name}')
+            print('')
+            registered_names.append( (wave_name, marker_name, zi_channel_idx, qupulse_channel_name))
+            
+            
+        print('result of single_channels:')
+        print(registered_names)
+        return registered_names
 
 class HDAWGProgramManager:
     """Manages qupulse programs in memory and seqc representations of those. Facilitates qupulse to seqc translation."""
@@ -634,18 +710,19 @@ class HDAWGProgramManager:
     ProgramEntry.index.__doc__ = """Program to seqc switch case mapping."""
     ProgramEntry.seqc_rep.__doc__ = """Seqc representation of program inside case statement."""
 
-    def __init__(self, wave_manager: HDAWGWaveManager) -> None:
+    def __init__(self, wave_manager: HDAWGWaveManager, number_of_channels) -> None:
         # Use ordered dict, so index creation for new programs is trivial (also in case of deletions).
         self._known_programs = OrderedDict()  # type: Dict[str, HDAWGProgramManager.ProgramEntry]
         self._wave_manager = weakref.proxy(wave_manager)
         # TODO: Overwritten by register and used in waveform_to_seqc. This pattern is ugly. Think of something better.
-        self._channels = (None, None)
-        self._markers = (None, None)
-        self._voltage_transformation = (None, None)
+        self._number_of_channels = number_of_channels
+        self._channels = (None,)*self._number_of_channels
+        self._markers = (None,)*self._number_of_channels
+        self._voltage_transformation = (None,)*self._number_of_channels
         self._sample_rate = TimeType()
         self._overwrite = False
-        self._output_range = (1, 1)
-        self._output_offset = (0, 0)
+        self._output_range = (1,)*self._number_of_channels
+        self._output_offset = (0,)*self._number_of_channels
 
     def remove(self, name: str) -> None:
         # TODO: Call removal of program waveforms on WaveManger.
@@ -666,8 +743,8 @@ class HDAWGProgramManager:
                  markers: Tuple[Optional[ChannelID], Optional[ChannelID]],
                  voltage_transformation: Tuple[Callable, Callable],
                  sample_rate: TimeType,
-                 output_range: Tuple[float, float],
-                 output_offset: Tuple[float, float],
+                 output_range: Tuple[float],
+                 output_offset: Tuple[float],
                  overwrite: bool = False) -> None:
         self._channels = channels
         self._markers = markers
@@ -716,22 +793,57 @@ class HDAWGProgramManager:
 
     def waveform_to_seqc(self, waveform: Waveform) -> str:
         """Return command that plays waveform."""
-        wf_name, mk_name = self._wave_manager.register(waveform,
-                                                       self._channels,
-                                                       self._markers,
-                                                       self._voltage_transformation,
-                                                       self._sample_rate,
-                                                       self._output_range,
-                                                       self._output_offset,
-                                                       self._overwrite)
-        if mk_name is None:
-            return 'playWave("{}");'.format(wf_name)
-        else:
-            return 'playWave(add("{}", "{}"));'.format(wf_name, mk_name)
+        
+        
+        if 1:           
+            registered_names = self._wave_manager.register_single_channels(waveform,
+                                                               self._channels,
+                                                               self._markers,
+                                                               self._voltage_transformation,
+                                                               self._sample_rate,
+                                                               self._output_range,
+                                                               self._output_offset,
+                                                               self._overwrite)
+            
+            www=[]
+            for _, wave_data in enumerate(registered_names):
+                wf_name, mk_name, channel_idx, qupulse_channel_name = wave_data
+ 
+                if mk_name is not None:
+                    if wf_name is None:
+                        combined_name = '"' +mk_name+'"' 
+                    else:
+                        print('  adding marker channel to {wf_name}')
+                        combined_name = f'add("{wf_name}","{mk_name}")' 
+                else:
+                    if wf_name is None:
+                        continue
+                    else:
+                        combined_name = '"' + wf_name + '"'
+                www.append( f'{channel_idx}, {combined_name}' )
+            playwave_content = ','.join(www)
+    
+            return f'playWave({playwave_content});'
+       
+        ## original
+        else:    
+                
+            wf_name, mk_name = self._wave_manager.register(waveform,
+                                                           self._channels,
+                                                           self._markers,
+                                                           self._voltage_transformation,
+                                                           self._sample_rate,
+                                                           self._output_range,
+                                                           self._output_offset,
+                                                           self._overwrite)
+            if mk_name is None:
+                return 'playWave("{}");'.format(wf_name)
+            else:
+                return 'playWave(add("{}", "{}"));'.format(wf_name, mk_name)
 
     # noinspection PyMethodMayBeStatic
     def case_wrap_program(self, prog: ProgramEntry, prog_name, indent: int = 8) -> str:
-        indented_seqc = textwrap.indent('{}\nwhile(true);'.format(prog.seqc_rep), ' ' * 4)
+        indented_seqc = textwrap.indent('{}\n// end of {}'.format(prog.seqc_rep, prog_name), ' ' * 4)
         case_str = 'case {:d}: // Program name: {}\n{}'.format(prog.index, prog_name, indented_seqc)
         return textwrap.indent(case_str, ' ' * indent)
 
@@ -810,35 +922,96 @@ class HDAWGUploadException(HDAWGException):
 
 if __name__ == "__main__":
     from qupulse.pulses import TablePT, SequencePT, RepetitionPT
-    hdawg = HDAWGRepresentation(device_serial='dev8075', device_interface='USB')
-
-    entry_list1 = [(0, 0), (20, .2, 'hold'), (40, .3, 'linear'), (80, 0, 'jump')]
+    if 0:
+        hdawg = HDAWGRepresentation(device_serial='DEV8049') # , device_interface='USB')
+        hdawg.reset()
+    else:
+        hdawg = HDAWGRepresentation(device_serial='DEV8049', channel_grouping=HDAWGChannelGrouping.CHAN_GROUP_1x8) # , device_interface='USB')
+        hdawg.sample_rate_index=0
+        hdawg.reset()
+    
+    channel_name= 'pulseA'
+    entry_list1 = [(0, 0), (5, .2, 'hold'), (40, .3, 'linear'), (80, 0, 'jump')]
     entry_list2 = [(0, 0), (20, -.2, 'hold'), (40, -.3, 'linear'), (50, 0, 'jump')]
     entry_list3 = [(0, 0), (20, -.2, 'linear'), (50, -.3, 'linear'), (70, 0, 'jump')]
-    tpt1 = TablePT({0: entry_list1, 1: entry_list2}, measurements=[('m', 20, 30)])
-    tpt2 = TablePT({0: entry_list2, 1: entry_list1})
-    tpt3 = TablePT({0: entry_list3, 1: entry_list2}, measurements=[('m', 10, 50)])
-    rpt = RepetitionPT(tpt1, 4)
-    spt = SequencePT(tpt2, rpt)
-    rpt2 = RepetitionPT(spt, 2)
-    spt2 = SequencePT(rpt2, tpt3)
+    tpt1 = TablePT({channel_name: entry_list1, 1: entry_list2}, measurements=[('m', 20, 30)])
+    tpt2 = TablePT({channel_name: entry_list2, 1: entry_list1})
+    tpt3 = TablePT({channel_name: entry_list3, 1: entry_list2}, measurements=[('m', 10, 50)])
+    if 0:
+        rpt = RepetitionPT(tpt1, 4)
+        spt = SequencePT(tpt2, rpt)
+        rpt2 = RepetitionPT(spt, 2)
+        spt2 = SequencePT(rpt2, tpt3)
+    else:
+        tpt1 = TablePT({channel_name: entry_list1, 1: entry_list2}, measurements=[('m', 20, 30)])
+        tpt1 = TablePT({channel_name: entry_list1})
+        from projects.qi.utils import plot_pulse
+        plot_pulse(tpt1, fig=10)
+        spt2=tpt1
     p = spt2.create_program()
+    print(p)
 
-    ch = (0, 1)
-    mk = (0, None)
-    vt = (lambda x: x, lambda x: x)
-    hdawg.channel_pair_AB.upload('table_pulse_test1', p, ch, mk, vt)
+# FIXME: silent error with voltage to high?
+    
+    if hdawg.channel_grouping==HDAWGChannelGrouping.CHAN_GROUP_1x8:
+        if 0:
+            ch = [channel_name,None,channel_name,None,None,None,None,None,]
+            mk = (None, None,channel_name,None,None,None,None,channel_name)
+            vt = (lambda x: x, lambda x: x/10.)+(lambda x: x,)*6
+            hdawg.channel_pair_full.upload('table_pulse_test6', p, ch, mk, vt)
+        else:
+            ch = (None,)*4+('P2', 'P1', 'P2', 'P2')
+            mk = ('marker', None,None)+(None,)*5
+            vt = (lambda x: x/4.,)*8
+            
+            
+            hdawg8_logger = logging.getLogger('ziHDAWG')
+            hdawg8_logger.setLevel(logging.INFO)
+            
+            pulse_generator.clear()
+            pulse_generator.experiment_sequence['compensation']['duration']=250e-6
+            pulse_generator.add_stages(['initialization', 'manipulation','readout','compensation' ])
+            pulse_generator.add_wait_pulse(20e-6)
+            pulse_generator.add_H(qubit=0)
+            pulse_generator.add_wait_pulse(20e-6)
+            pulse_generator.add_CZ(0,1)
+            pulse_generator.add_wait_pulse(20e-6)
+            gates_pulse, iq_pules = pulse_generator.generate_pulse_sequence()
+            plot_pulse(gates_pulse, 1)
+            
+            p=gates_pulse.create_program()
+            hdawg.channel_pair_full.upload('gates_test7', p, ch, mk, vt)
+            
+            time.sleep(.1)
+            start_groups(qcodes_awg)
+            select_program(qcodes_awg, 1)
+            enable_outputs(qcodes_awg, 1)
 
-    entry_list_zero = [(0, 0), (100, 0, 'hold')]
-    entry_list_step = [(0, 0), (50, .5, 'hold'), (100, 0, 'hold')]
-    marker_start = TablePT({'P1': entry_list_zero, 'marker': entry_list_step})
-    tpt1 = TablePT({'P1': entry_list_zero, 'marker': entry_list_zero})
-    spt2 = SequencePT(marker_start, tpt1)
+            
+        
+    else:
+        ch = (channel_name, None)
+        mk = (channel_name, None)
+        vt = (lambda x: x, lambda x: x)
+        hdawg.channel_pair_AB.upload('table_pulse_test6', p, ch, mk, vt)
+        
 
-    p = spt2.create_program()
+        if 0:    
+            entry_list_zero = [(0, 0), (100, 0, 'hold')]
+            entry_list_step = [(0, 0), (50, .5, 'hold'), (100, 0, 'hold')]
+            marker_start = TablePT({'P1': entry_list_zero, 'marker': entry_list_step})
+            tpt1 = TablePT({'P1': entry_list_zero, 'marker': entry_list_zero})
+            spt2 = SequencePT(marker_start, tpt1)
+        
+    
+            p = spt2.create_program()
+        
+            ch = ('P1', None)
+            mk = ('marker', None)
+            voltage_transform = (lambda x: x,) * len(ch)
+            hdawg.channel_pair_AB.upload('table_pulse_test2', p, ch, mk, voltage_transform)
 
-    ch = ('P1', None)
-    mk = ('marker', None)
-    voltage_transform = (lambda x: x,) * len(ch)
-    hdawg.channel_pair_AB.upload('table_pulse_test2', p, ch, mk, voltage_transform)
+#%%
+            
+            #print(hdawg.get_status_table()[0])
 
