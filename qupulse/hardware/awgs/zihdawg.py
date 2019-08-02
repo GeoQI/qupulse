@@ -69,7 +69,8 @@ class HDAWGRepresentation:
                  api_level_number: int = 6,
                  reset: bool = False,
                  timeout: float = 120,
-                 channel_grouping = HDAWGChannelGrouping.CHAN_GROUP_4x2) -> None:
+                 channel_grouping = HDAWGChannelGrouping.CHAN_GROUP_4x2,
+                 sample_rate_index = None) -> None:
         """
         :param device_serial:     Device serial that uniquely identifies this device to the LabOne data server
         :param device_interface:  Either '1GbE' for ethernet or 'USB'
@@ -84,7 +85,9 @@ class HDAWGRepresentation:
         self.api_session.connectDevice(device_serial, device_interface)
         self._dev_ser = device_serial
         self.channel_grouping =  channel_grouping
-        self.sample_rate_index = 0
+        if sample_rate_index is None:
+            sample_rate_index = 0
+        self.sample_rate_index = sample_rate_index
 
         if reset:
             # Create a base configuration: Disable all available outputs, awgs, demods, scopes,...
@@ -142,7 +145,7 @@ class HDAWGRepresentation:
                              HDAWGChannelGrouping.CHAN_GROUP_1x8.value])
         settings.append(['/{}/awgs/*/time'.format(self.serial), self.sample_rate_index]) 
         settings.append(['/{}/sigouts/*/range'.format(self.serial), HDAWGVoltageRange.RNG_1V.value])
-        settings.append(['/{}/awgs/*/outputs/*/amplitude'.format(self.serial), 1.0])  # Default amplitude factor 1.0
+        settings.append(['/{}/awgs/*/outputs/*/amplitude'.format(self.serial), 3.0])  # Default amplitude factor 1.0
         settings.append(['/{}/awgs/*/outputs/*/modulation/mode'.format(self.serial), HDAWGModulationMode.OFF.value])
         settings.append(['/{}/awgs/*/userregs/*'.format(self.serial), 0])  # Reset all user registers to 0.
         settings.append(['/{}/awgs/*/single'.format(self.serial), 1])  # Single execution mode of sequence.
@@ -318,6 +321,9 @@ class HDAWGChannelPair(AWG):
         Returning from setting user register in seqc can take from 50ms to 60 ms. Fluctuates heavily. Not a good way to
         have deterministic behaviour "setUserReg(PROG_SEL, PROG_IDLE);".
         """
+        logger = logging.getLogger('ziHDAWG')
+        t0=time.time()
+        
         if len(channels) != self.num_channels:
             raise HDAWGValueError('Channel ID not specified')
         if len(markers) != self.num_markers:
@@ -339,7 +345,7 @@ class HDAWGChannelPair(AWG):
 
         # TODO: Implement offset handling like in tabor driver.
         channel_ranges = tuple([self._device.range(self._channels[ii]) for ii in range(self.num_channels)])
-        print(f'HDAWGChannelPair: call _program_manager.register')
+        logger.info(f'HDAWGChannelPair: call _program_manager.register {time.time()-t0:.2f} [s]')
         self._program_manager.register(name,
                                        program,
                                        channels,
@@ -350,13 +356,14 @@ class HDAWGChannelPair(AWG):
                                        (0,)*self.num_channels,
                                        force)
 
-        print(f'HDAWGChannelPair: call assemble_sequencer_program')
+        logger.info(f'HDAWGChannelPair: call assemble_sequencer_program {time.time()-t0:.2f} [s]')
         awg_sequence = self._program_manager.assemble_sequencer_program()
-        print(f'HDAWGChannelPair: call _upload_sourcestring')
-        print('-----------')
-        print(awg_sequence)
-        print('-----------')
+        logger.info(f'HDAWGChannelPair: call _upload_sourcestring {time.time()-t0:.2f} [s]')
+        logger.debug('-----------')
+        logger.debug(awg_sequence)
+        logger.debug('-----------')
         self._upload_sourcestring(awg_sequence)
+        logger.info(f'HDAWGChannelPair: upload complete {time.time()-t0:.2f} [s]')
 
     def _upload_sourcestring(self, sourcestring: str) -> None:
         """Transfer AWG sequencer program as string to HDAWG and block till compilation and upload finish.
@@ -634,7 +641,7 @@ class HDAWGWaveManager:
             wave_name = self.generate_wave_name(amplitude)
     
     
-            print(f'wave_name {wave_name} hash {amplitude_hash}')
+            #print(f'wave_name {wave_name} hash {amplitude_hash}')
             
             if amplitude_hash in self._by_data:
                 wave_name = self._by_data[amplitude_hash]
@@ -674,27 +681,25 @@ class HDAWGWaveManager:
                      output_offset: Tuple[float],
                      overwrite: bool = False):
         
+        logger = logging.getLogger('ziHDAWG')
         registered_names = []
         for idx, channel in enumerate(channels):
-            print(f'### register template channel {channel} to physical channel {idx+1}')
             qupulse_channel_name=channel
             qupulse_marker_name=markers[idx]
             zi_channel_idx=idx+1
             
             if qupulse_channel_name is None and qupulse_marker_name is None:
                 continue
-                #registered_names.append( (None, None, zi_channel_idx, qupulse_channel_name))
+            logger.debug(f'register_single_channels: register template channel {channel} to physical channel {idx+1}')
                 
             marker=markers[idx]
             (wave_name, marker_name)=self.register(waveform, (channel,), markers=(marker,), voltage_transformation=(voltage_transformations[idx], ),
                                   sample_rate = sample_rate, output_range=output_range , output_offset=output_offset)
-            print(f' registered: {wave_name}, {marker_name}')
-            print('')
+            logger.debug(f' registered: {wave_name}, {marker_name}, physical channel {zi_channel_idx}, duration {float(waveform.duration/1e3):.2f} [us]')
             registered_names.append( (wave_name, marker_name, zi_channel_idx, qupulse_channel_name))
             
             
-        print('result of single_channels:')
-        print(registered_names)
+        logger.info(f'result of single_channels: {registered_names}')
         return registered_names
 
 class HDAWGProgramManager:
@@ -796,6 +801,8 @@ class HDAWGProgramManager:
         
         
         if 1:           
+            logger = logging.getLogger('ziHDAWG')
+
             registered_names = self._wave_manager.register_single_channels(waveform,
                                                                self._channels,
                                                                self._markers,
@@ -813,7 +820,7 @@ class HDAWGProgramManager:
                     if wf_name is None:
                         combined_name = '"' +mk_name+'"' 
                     else:
-                        print('  adding marker channel to {wf_name}')
+                        logger.info(f'  adding marker channel to {wf_name}')
                         combined_name = f'add("{wf_name}","{mk_name}")' 
                 else:
                     if wf_name is None:
@@ -876,7 +883,7 @@ class HDAWGProgramManager:
             switch(prog_sel){
         _case_block_
                 default:
-                    playWave(idle, idle);
+                    playWave(1, idle);
             }
         }
         """)
