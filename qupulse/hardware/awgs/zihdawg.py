@@ -84,7 +84,6 @@ class HDAWGRepresentation:
         zhinst.utils.api_server_version_check(self.api_session)  # Check equal data server and api version.
         self.api_session.connectDevice(device_serial, device_interface)
         self._dev_ser = device_serial
-        self.channel_grouping =  channel_grouping
         if sample_rate_index is None:
             sample_rate_index = 0
         self.sample_rate_index = sample_rate_index
@@ -96,36 +95,51 @@ class HDAWGRepresentation:
         self._initialize()
 
         if channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
-            self.number_of_channel_groups = 4
-            
-            self._channel_pair_AB = HDAWGChannelPair(self, (1, 2), str(self.serial) + '_AB', timeout)
-            self._channel_pair_CD = HDAWGChannelPair(self, (3, 4), str(self.serial) + '_CD', timeout)
-            self._channel_pair_EF = HDAWGChannelPair(self, (5, 6), str(self.serial) + '_EF', timeout)
-            self._channel_pair_GH = HDAWGChannelPair(self, (7, 8), str(self.serial) + '_GH', timeout)
-            self._channel_pair_full = None
+            self._channel_groups = (
+                HDAWGChannelGroup(self, (1, 2), str(self.serial) + '_AB', timeout),
+                HDAWGChannelGroup(self, (3, 4), str(self.serial) + '_CD', timeout),
+                HDAWGChannelGroup(self, (5, 6), str(self.serial) + '_EF', timeout),
+                HDAWGChannelGroup(self, (7, 8), str(self.serial) + '_GH', timeout),
+            )
+        elif channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_2x4:
+            self._channel_groups = (
+                HDAWGChannelGroup(self, (1, 2, 3, 4), str(self.serial) + '_ABCD', timeout),
+                HDAWGChannelGroup(self, (5, 6, 7, 8), str(self.serial) + '_EFGH', timeout),
+            )
+        elif channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_8x1:
+            self._channel_groups = (
+                HDAWGChannelGroup(self, range(1, 9), str(self.serial) + '_full', timeout),
+            )
         else:
-            self.number_of_channel_groups = 1
-            self._channel_pair_full = HDAWGChannelPair(self, range(1,9), str(self.serial) + '_full', timeout)
-            
-    @property
-    def channel_pair_full(self) -> 'HDAWGChannelPair':
-        return self._channel_pair_full
+            # FIXME: raise exception
+            self._channel_groups = ()
 
     @property
-    def channel_pair_AB(self) -> 'HDAWGChannelPair':
-        return self._channel_pair_AB
+    def number_of_channel_groups(self) -> int:
+        return len(self._channel_groups)
+
+    def channel_group(self, idx: int) -> 'HDAWGChannelGroup':
+        return self._channel_groups[idx]
 
     @property
-    def channel_pair_CD(self) -> 'HDAWGChannelPair':
-        return self._channel_pair_CD
+    def channel_pair_AB(self) -> 'HDAWGChannelGroup':
+        # FIXME raise exception if incompatible channel grouping
+        return self._channel_groups[0]
 
     @property
-    def channel_pair_EF(self) -> 'HDAWGChannelPair':
-        return self._channel_pair_EF
+    def channel_pair_CD(self) -> 'HDAWGChannelGroup':
+        # FIXME raise exception if incompatible channel grouping
+        return self._channel_groups[1]
 
     @property
-    def channel_pair_GH(self) -> 'HDAWGChannelPair':
-        return self._channel_pair_GH
+    def channel_pair_EF(self) -> 'HDAWGChannelGroup':
+        # FIXME raise exception if incompatible channel grouping
+        return self._channel_groups[2]
+
+    @property
+    def channel_pair_GH(self) -> 'HDAWGChannelGroup':
+        # FIXME raise exception if incompatible channel grouping
+        return self._channel_groupd[3]
 
     @property
     def api_session(self) -> zhinst.ziPython.ziDAQServer:
@@ -137,13 +151,8 @@ class HDAWGRepresentation:
 
     def _initialize(self) -> None:
         settings = []
-        if self.channel_grouping==HDAWGChannelGrouping.CHAN_GROUP_4x2:
-            settings.append(['/{}/system/awg/channelgrouping'.format(self.serial),
-                             HDAWGChannelGrouping.CHAN_GROUP_4x2.value])
-        else:
-            settings.append(['/{}/system/awg/channelgrouping'.format(self.serial),
-                             HDAWGChannelGrouping.CHAN_GROUP_1x8.value])
-        settings.append(['/{}/awgs/*/time'.format(self.serial), self.sample_rate_index]) 
+        settings.append(['/{}/system/awg/channelgrouping'.format(self.serial), self.channel_grouping.value])
+        settings.append(['/{}/awgs/*/time'.format(self.serial), self.sample_rate_index])
         settings.append(['/{}/sigouts/*/range'.format(self.serial), HDAWGVoltageRange.RNG_1V.value])
         settings.append(['/{}/awgs/*/outputs/*/amplitude'.format(self.serial), 3.0])  # Default amplitude factor 1.0
         settings.append(['/{}/awgs/*/outputs/*/modulation/mode'.format(self.serial), HDAWGModulationMode.OFF.value])
@@ -162,13 +171,8 @@ class HDAWGRepresentation:
     def reset(self) -> None:
         zhinst.utils.disable_everything(self.api_session, self.serial)
         self._initialize()
-        if self.channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
-            self.channel_pair_AB.clear()
-            self.channel_pair_CD.clear()
-            self.channel_pair_EF.clear()
-            self.channel_pair_GH.clear()
-        else:
-            self.channel_pair_full.clear()
+        for cg in self._channel_groups:
+            cg.clear()
 
     @valid_channel
     def offset(self, channel: int, voltage: float = None) -> float:
@@ -201,14 +205,8 @@ class HDAWGRepresentation:
     def get_status_table(self):
         """Return node tree of instrument with all important settings, as well as each channel group as tuple."""
         session_data = (self.api_session.get('/{}/*'.format(self.serial)), )
-        if self.channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
-            return session_data + (self.channel_pair_AB.awg_module.get('awgModule/*'),
-                self.channel_pair_CD.awg_module.get('awgModule/*'),
-                self.channel_pair_EF.awg_module.get('awgModule/*'),
-                self.channel_pair_GH.awg_module.get('awgModule/*'))
-        else:
-            return session_data + (self.channel_pair_full.awg_module.get('awgModule/*'), )
-                
+        return session_data + (cg.awg_module.get('awgModule/*') for cg in self._channel_groups)
+
 
 class HDAWGTriggerOutSource(Enum):
     """Assign a signal to a marker output. This is per AWG Core."""
@@ -248,8 +246,9 @@ class HDAWGRegisterFunc(Enum):
     PROG_IDLE = 0  # This value of the PROG_SEL register is reserved for the idle waveform.
 
 
-class HDAWGChannelPair(AWG):
-    """Represents a channel pair of the Zurich Instruments HDAWG as an independent AWG entity.
+class HDAWGChannelGroup(AWG):
+    """Represents a group of channels of the Zurich Instruments HDAWG as an independent AWG entity.
+    Depending on the chosen HDAWG grouping, a group can have 2, 4 or 8 channels.
     It represents a set of channels that have to have(hardware enforced) the same:
         -control flow
         -sample rate
@@ -264,8 +263,15 @@ class HDAWGChannelPair(AWG):
         super().__init__(identifier)
         self._device = weakref.proxy(hdawg_device)
 
-        if channels not in ((1, 2), (3, 4), (5, 6), (7, 8), range(1,9)):
-            raise HDAWGValueError('Invalid channel pair: {}'.format(channels))
+        if hdawg_device.channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
+            if channels not in ((1, 2), (3, 4), (5, 6), (7, 8)):
+                raise HDAWGValueError('Invalid 4x2 channel pair: {}'.format(channels))
+        elif hdawg_device.channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_1x8:
+            if channels != range(1, 9):
+                raise HDAWGValueError('Invalid 1x8 channel list: {}'.format(channels))
+        elif hdawg_device.channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_2x4:
+            raise HDAWGValueError('Channel grouping 2x4 not yet supported')
+
         self._channels = channels
         self._timeout = timeout
 
@@ -277,7 +283,7 @@ class HDAWGChannelPair(AWG):
         self.device.api_session.setInt('/{}/awgs/{:d}/single'.format(self.device.serial, self.awg_group_index), 1)
 
         self._wave_manager = HDAWGWaveManager(self.user_directory, self.identifier)
-        self._program_manager = HDAWGProgramManager(self._wave_manager, number_of_channels = len(channels))
+        self._program_manager = HDAWGProgramManager(self._wave_manager, number_of_channels=len(channels))
         self._current_program = None  # Currently armed program.
 
     @property
@@ -353,7 +359,7 @@ class HDAWGChannelPair(AWG):
                                        voltage_transformation,
                                        q_sample_rate,
                                        channel_ranges,
-                                       (0,)*self.num_channels,
+                                       (0.,)*self.num_channels,
                                        force)
 
         logger.info(f'HDAWGChannelPair: call assemble_sequencer_program {time.time()-t0:.2f} [s]')
@@ -476,11 +482,8 @@ class HDAWGChannelPair(AWG):
 
     @property
     def awg_group_index(self) -> int:
-        """AWG node group index assuming 4x2 channel grouping. Then 0...3 will give appropriate index of group."""
-        if self.num_channels==2:
-            return self._channels[0] // 2
-        else:
-            return 0
+        """AWG node group index. Ranges: 0-3 in 4x2 mode, 0-1 in 2x4 mode, 0 in 1x8 mode"""
+        return (self._channels[0] - 1) // self.num_channels
 
     @property
     def device(self) -> HDAWGRepresentation:
@@ -528,6 +531,8 @@ class HDAWGChannelPair(AWG):
             self.device.api_session.sync()  # Global sync: Ensure settings have taken effect on the device.
         return self.device.api_session.getDouble(node_path)
 
+# backwards compat
+HDAWGChannelPair = HDAWGChannelGroup
 
 class HDAWGWaveManager:
     """Manages waveforms in memory and I/O of sampled data to disk."""
@@ -535,15 +540,9 @@ class HDAWGWaveManager:
     # TODO: Voltage to -1..1 range and check if max amplitude in range+offset window.
     # TODO: Manage side effects if reusing data over several programs and a shared waveform is overwritten.
 
-    WaveformEntry = NamedTuple('WaveformEntry',
-                               [('waveform', Waveform),
-                                ('wave_name', str),
-                                ('marker_name', Optional[str])])
-    WaveformEntry.__doc__ = """Entry of known waveforms."""
-
     def __init__(self, user_dir: str, awg_identifier: str) -> None:
-        self._known_waveforms = dict()  # type: Dict[str, HDAWGWaveManager.WaveformEntry]
-        self._by_data = dict()  # type: Dict[int, str]
+        self._wave_by_data = dict()  # type: Dict[int, str]
+        self._marker_by_data = dict()  # type: Dict[int, str]
         self._file_type = 'csv'
         self._awg_prefix = awg_identifier
         self._wave_dir = Path(user_dir).joinpath('awg', 'waves')
@@ -552,36 +551,32 @@ class HDAWGWaveManager:
         self.clear()
 
     def clear(self) -> None:
-        """Clear all knonw waveforms from memory and disk, associated with this AWG instance."""
-        self._known_waveforms.clear()
-        self._by_data.clear()
+        """Clear all known waveforms from memory and disk associated with this AWG identifier."""
+        self._wave_by_data.clear()
+        self._marker_by_data.clear()
         for wave_file in self._wave_dir.glob(self._awg_prefix + '_*.' + self._file_type):
             wave_file.unlink()
 
     def remove(self, name: str) -> None:
         """Remove one waveform from memory and disk."""
         # TODO: Inefficient call & does not care about side-effects, if wave or marker used elsewhere.
-        wf = self._known_waveforms.pop(name)
-        for wf_entry, wf_name in self._by_data.items():
-            if wf_name == wf.wave_name:
-                del self._by_data[wf_entry]
+        for wf_entry, wf_name in self._wave_by_data.items():
+            if wf_name == name:
+                wave_path = self.full_file_path(name)
+                wave_path.unlink()
+                del self._wave_by_data[wf_entry]
                 break
-        for wf_entry, wf_name in self._by_data.items():
-            if wf_name == wf.marker_name:
-                del self._by_data[wf_entry]
+
+        for wf_entry, wf_name in self._marker_by_data.items():
+            if wf_name == name:
+                wave_path = self.full_file_path(name)
+                wave_path.unlink()
+                del self._marker_by_data[wf_entry]
                 break
-        wave_path = self.full_file_path(wf.wave_name)
-        wave_path.unlink()
-        wave_path = self.full_file_path(wf.marker_name)
-        wave_path.unlink()
 
     def full_file_path(self, name: str) -> Path:
         """Absolute file path of waveform on disk."""
         return self._wave_dir.joinpath(name + '.' + self._file_type)
-
-    def generate_name(self, waveform: Waveform) -> str:
-        """Unique name of waveform used for identification."""
-        return self._awg_prefix + '_' + str(abs(hash(waveform)))
 
     def to_file(self, name: str, wave_data: np.ndarray, fmt: str = '%f', overwrite: bool = False) -> None:
         """Save sampled data to disk."""
@@ -594,9 +589,13 @@ class HDAWGWaveManager:
         """Calculate hash of sampled data."""
         return hash(bytes(data))
 
-    def generate_wave_name(self, data: np.ndarray):
-        """Unique name of wave or marker data."""
-        return self._awg_prefix + '_' + str(abs(self.calc_hash(data)))
+    def generate_wave_name(self, data_hash: int):
+        """Unique name of wave data."""
+        return self._awg_prefix + '_' + str(abs(data_hash))
+
+    def generate_marker_name(self, data_hash: int):
+        """Unique name of marker data."""
+        return self._awg_prefix + '_M_' + str(abs(data_hash))
 
     def volt_to_amp(self, volt: np.ndarray, rng: float, offset: float) -> np.ndarray:
         """Scale voltage pulse data to dimensionless -1..1 amplitude of full range. If out of range throw error."""
@@ -613,40 +612,34 @@ class HDAWGWaveManager:
                  sample_rate: TimeType,
                  output_range: Tuple[float],
                  output_offset: Tuple[float],
-                 overwrite: bool = False) -> Tuple[str, Optional[str]]:
-        """Return waveform name and optionally marker name if waveform is known. Register waveform in memory and save to
-        disk otherwise. If hash of newly sampled marker or waveform data matches previously sampled data, return
-        previously known data."""
-        name = self.generate_name(waveform) + str(channels[0])
-        #print(f'generated name: {name}')
-        #if name in self._known_waveforms:
-        #    return self._known_waveforms[name].wave_name, self._known_waveforms[name].marker_name
+                 overwrite: bool = False) -> Tuple[str, str]:
+        """Write sampled waveforms from all channels in a single file and write all marker channels in a different
+        single file.
 
+         Return a tuple with the name of the waveforms file (first element) and/or markers data file (second element).
+         If a waveform or marker is not present, None will be returned in place of the name.
+         The sampled waveforms files and markers files are cached based on a data hash value. If a wave or marker file
+          with the same hash already exists, it will reuse the existing file and return its name."""
         sample_times, n_samples = get_sample_times(waveform, sample_rate_in_GHz=sample_rate)
 
         number_of_channels = len(channels)
         if number_of_channels>1:
             warnings.warn('not tested?')
-        amplitude = np.zeros((n_samples, number_of_channels), dtype=float)
-        for idx, chan in enumerate(channels):
-            if chan is not None:
-                voltage = voltage_transformation[idx](waveform.get_sampled(chan, sample_times))
-                amplitude[:, idx] = self.volt_to_amp(voltage, output_range[idx], output_offset[idx])
 
-        # Reuse sampled data, if available.
-        amplitude_hash = self.calc_hash(amplitude)
-        
-        if np.any([chan is not  None for chan in channels]):
-            
-            wave_name = self.generate_wave_name(amplitude)
-    
-    
-            #print(f'wave_name {wave_name} hash {amplitude_hash}')
-            
-            if amplitude_hash in self._by_data:
-                wave_name = self._by_data[amplitude_hash]
-            else:
-                self._by_data[amplitude_hash] = wave_name
+        if np.any([chan is not None for chan in channels]):
+            amplitude = np.zeros((n_samples, number_of_channels), dtype=float)
+            for idx, chan in enumerate(channels):
+                if chan is not None:
+                    voltage = voltage_transformation[idx](waveform.get_sampled(chan, sample_times))
+                    amplitude[:, idx] = self.volt_to_amp(voltage, output_range[idx], output_offset[idx])
+
+            # Reuse sampled data, if available.
+            amplitude_hash = self.calc_hash(amplitude)
+            wave_name = self._wave_by_data.get(amplitude_hash)
+            if wave_name is None:
+                wave_name = self.generate_wave_name(amplitude_hash)
+                self._wave_by_data[amplitude_hash] = wave_name
+            if overwrite or not self.full_file_path(wave_name).exists():
                 self.to_file(wave_name, amplitude, overwrite=overwrite)
         else:
             wave_name = None
@@ -657,49 +650,52 @@ class HDAWGWaveManager:
                 if marker is not None:
                     marker_output[:, idx] = waveform.get_sampled(marker, sample_times) != 0
 
-            # Reuse sampled data, if available.
             marker_hash = self.calc_hash(marker_output)
-            marker_name = self.generate_wave_name(marker_output)
-
-            if marker_hash in self._by_data:
-                marker_name = self._by_data[marker_hash]
-            else:
-                self._by_data[marker_hash] = marker_name
+            marker_name = self._marker_by_data.get(marker_hash)
+            if marker_name is None:
+                marker_name = self.generate_marker_name(marker_hash)
+                self._marker_by_data[marker_hash] = marker_name
+            if overwrite or not self.full_file_path(marker_name).exists():
                 self.to_file(marker_name, marker_output, fmt='%d', overwrite=overwrite)
         else:
             marker_name = None
 
-        self._known_waveforms[name] = self.WaveformEntry(waveform, wave_name, marker_name)
         return wave_name, marker_name
 
     def register_single_channels(self, waveform: Waveform,
-                     channels: Tuple[Optional[ChannelID], Optional[ChannelID]],
-                     markers: Tuple[Optional[ChannelID], Optional[ChannelID]],
-                     voltage_transformations: Tuple[Callable, Callable],
-                     sample_rate: TimeType,
-                     output_range: Tuple[float],
-                     output_offset: Tuple[float],
-                     overwrite: bool = False):
-        
+                                 channels: Tuple[Optional[ChannelID], Optional[ChannelID]],
+                                 markers: Tuple[Optional[ChannelID], Optional[ChannelID]],
+                                 voltage_transformations: Tuple[Callable, Callable],
+                                 sample_rate: TimeType,
+                                 output_range: Tuple[float],
+                                 output_offset: Tuple[float],
+                                 overwrite: bool = False) -> list[tuple]:
+        """Write sampled waveforms in one file per channel and write all markers channels in separate files.
+        Return a list with tuples. Each entry in the list represents one channel and contains:
+        (wave_name, marker_name, hardware_channel_index, channel_name)
+        """
         logger = logging.getLogger('ziHDAWG')
         registered_names = []
         for idx, channel in enumerate(channels):
-            qupulse_channel_name=channel
-            qupulse_marker_name=markers[idx]
-            zi_channel_idx=idx+1
+            qupulse_channel_name = channel
+            qupulse_marker_name = markers[idx]
+            zi_channel_idx = idx+1
             
             if qupulse_channel_name is None and qupulse_marker_name is None:
                 continue
             logger.debug(f'register_single_channels: register template channel {channel} to physical channel {idx+1}')
-                
-            marker=markers[idx]
-            (wave_name, marker_name)=self.register(waveform, (channel,), markers=(marker,), voltage_transformation=(voltage_transformations[idx], ),
-                                  sample_rate = sample_rate, output_range=output_range , output_offset=output_offset)
-            logger.debug(f' registered: {wave_name}, {marker_name}, physical channel {zi_channel_idx}, duration {float(waveform.duration/1e3):.2f} [us]')
-            registered_names.append( (wave_name, marker_name, zi_channel_idx, qupulse_channel_name))
-            
-            
-        logger.info(f'result of single_channels: {registered_names}')
+
+            marker = markers[idx]
+            (wave_name, marker_name) = self.register(waveform,
+                                                     channels=(channel,),
+                                                     markers=(marker,),
+                                                     voltage_transformation=(voltage_transformations[idx],),
+                                                     sample_rate=sample_rate,
+                                                     output_range=output_range,
+                                                     output_offset=output_offset,
+                                                     overwrite=overwrite)
+            registered_names.append((wave_name, marker_name, zi_channel_idx, qupulse_channel_name))
+
         return registered_names
 
 class HDAWGProgramManager:
@@ -798,55 +794,37 @@ class HDAWGProgramManager:
 
     def waveform_to_seqc(self, waveform: Waveform) -> str:
         """Return command that plays waveform."""
-        
-        
-        if 1:           
-            logger = logging.getLogger('ziHDAWG')
 
-            registered_names = self._wave_manager.register_single_channels(waveform,
-                                                               self._channels,
-                                                               self._markers,
-                                                               self._voltage_transformation,
-                                                               self._sample_rate,
-                                                               self._output_range,
-                                                               self._output_offset,
-                                                               self._overwrite)
-            
-            www=[]
-            for _, wave_data in enumerate(registered_names):
-                wf_name, mk_name, channel_idx, qupulse_channel_name = wave_data
- 
-                if mk_name is not None:
-                    if wf_name is None:
-                        combined_name = '"' +mk_name+'"' 
-                    else:
-                        logger.info(f'  adding marker channel to {wf_name}')
-                        combined_name = f'add("{wf_name}","{mk_name}")' 
-                else:
-                    if wf_name is None:
-                        continue
-                    else:
-                        combined_name = '"' + wf_name + '"'
-                www.append( f'{channel_idx}, {combined_name}' )
-            playwave_content = ','.join(www)
-    
-            return f'playWave({playwave_content});'
-       
-        ## original
-        else:    
-                
-            wf_name, mk_name = self._wave_manager.register(waveform,
-                                                           self._channels,
-                                                           self._markers,
-                                                           self._voltage_transformation,
-                                                           self._sample_rate,
-                                                           self._output_range,
-                                                           self._output_offset,
-                                                           self._overwrite)
-            if mk_name is None:
-                return 'playWave("{}");'.format(wf_name)
+        logger = logging.getLogger('ziHDAWG')
+        registered_names = self._wave_manager.register_single_channels(waveform,
+                                                                       self._channels,
+                                                                       self._markers,
+                                                                       self._voltage_transformation,
+                                                                       self._sample_rate,
+                                                                       self._output_range,
+                                                                       self._output_offset,
+                                                                       self._overwrite)
+
+        www = []
+        for wave_data in registered_names:
+            wf_name, mk_name, channel_idx, qupulse_channel_name = wave_data
+
+            if mk_name is not None and wf_name is not None:
+                combined_name = f'add("{wf_name}", "{mk_name}")'
+            elif mk_name is not None and wf_name is None:
+                combined_name = '"' + mk_name + '"'
+            elif mk_name is None and wf_name is not None:
+                combined_name = '"' + wf_name + '"'
             else:
-                return 'playWave(add("{}", "{}"));'.format(wf_name, mk_name)
+                continue
+
+            www.append(f'{channel_idx},{combined_name}')
+
+        if not www:
+            return ''
+
+        playwave_content = ', '.join(www)
+        return f'playWave({playwave_content});'
 
     # noinspection PyMethodMayBeStatic
     def case_wrap_program(self, prog: ProgramEntry, prog_name, indent: int = 8) -> str:
@@ -965,7 +943,7 @@ if __name__ == "__main__":
             ch = [channel_name,None,channel_name,None,None,None,None,None,]
             mk = (None, None,channel_name,None,None,None,None,channel_name)
             vt = (lambda x: x, lambda x: x/10.)+(lambda x: x,)*6
-            hdawg.channel_pair_full.upload('table_pulse_test6', p, ch, mk, vt)
+            hdawg.channel_group(0).upload('table_pulse_test6', p, ch, mk, vt)
         else:
             ch = (None,)*4+('P2', 'P1', 'P2', 'P2')
             mk = ('marker', None,None)+(None,)*5
@@ -987,7 +965,7 @@ if __name__ == "__main__":
             plot_pulse(gates_pulse, 1)
             
             p=gates_pulse.create_program()
-            hdawg.channel_pair_full.upload('gates_test7', p, ch, mk, vt)
+            hdawg.channel_group(0).upload('gates_test7', p, ch, mk, vt)
             
             time.sleep(.1)
             start_groups(qcodes_awg)
@@ -1000,7 +978,7 @@ if __name__ == "__main__":
         ch = (channel_name, None)
         mk = (channel_name, None)
         vt = (lambda x: x, lambda x: x)
-        hdawg.channel_pair_AB.upload('table_pulse_test6', p, ch, mk, vt)
+        hdawg.channel_group(0).upload('table_pulse_test6', p, ch, mk, vt)
         
 
         if 0:    
@@ -1016,7 +994,7 @@ if __name__ == "__main__":
             ch = ('P1', None)
             mk = ('marker', None)
             voltage_transform = (lambda x: x,) * len(ch)
-            hdawg.channel_pair_AB.upload('table_pulse_test2', p, ch, mk, voltage_transform)
+            hdawg.channel_group(0).upload('table_pulse_test2', p, ch, mk, voltage_transform)
 
 #%%
             
