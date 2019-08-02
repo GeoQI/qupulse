@@ -7,6 +7,7 @@ import weakref
 import logging
 import warnings
 import time
+from itertools import chain
 
 try:
     import zhinst.ziPython
@@ -62,6 +63,8 @@ class HDAWGRepresentation:
     """HDAWGRepresentation represents an HDAWG8 instruments and manages a LabOne data server api session. A data server
     must be running and the device be discoverable. Channels are per default grouped into pairs."""
 
+    __version__ = 0.1
+    
     def __init__(self, device_serial: str = None,
                  device_interface: str = '1GbE',
                  data_server_addr: str = 'localhost',
@@ -70,7 +73,7 @@ class HDAWGRepresentation:
                  reset: bool = False,
                  timeout: float = 120,
                  channel_grouping = HDAWGChannelGrouping.CHAN_GROUP_4x2,
-                 sample_rate_index = None) -> None:
+                 sample_rate_index = 0) -> None:
         """
         :param device_serial:     Device serial that uniquely identifies this device to the LabOne data server
         :param device_interface:  Either '1GbE' for ethernet or 'USB'
@@ -84,15 +87,13 @@ class HDAWGRepresentation:
         zhinst.utils.api_server_version_check(self.api_session)  # Check equal data server and api version.
         self.api_session.connectDevice(device_serial, device_interface)
         self._dev_ser = device_serial
-        if sample_rate_index is None:
-            sample_rate_index = 0
+        self.channel_grouping = channel_grouping
         self.sample_rate_index = sample_rate_index
 
         if reset:
             # Create a base configuration: Disable all available outputs, awgs, demods, scopes,...
             zhinst.utils.disable_everything(self.api_session, self.serial)
 
-        self._initialize()
 
         if channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
             self._channel_groups = (
@@ -106,7 +107,7 @@ class HDAWGRepresentation:
                 HDAWGChannelGroup(self, (1, 2, 3, 4), str(self.serial) + '_ABCD', timeout),
                 HDAWGChannelGroup(self, (5, 6, 7, 8), str(self.serial) + '_EFGH', timeout),
             )
-        elif channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_8x1:
+        elif channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_1x8:
             self._channel_groups = (
                 HDAWGChannelGroup(self, range(1, 9), str(self.serial) + '_full', timeout),
             )
@@ -114,12 +115,19 @@ class HDAWGRepresentation:
             # FIXME: raise exception
             self._channel_groups = ()
 
+        self._initialize()
+
     @property
     def number_of_channel_groups(self) -> int:
         return len(self._channel_groups)
 
     def channel_group(self, idx: int) -> 'HDAWGChannelGroup':
         return self._channel_groups[idx]
+
+    def existing_programs(self):
+        
+        names = [channel_group._program_manager._known_programs.keys() for channel_group in self._channel_groups ]
+        return list(chain(*names))
 
     @property
     def channel_pair_AB(self) -> 'HDAWGChannelGroup':
@@ -669,7 +677,7 @@ class HDAWGWaveManager:
                                  sample_rate: TimeType,
                                  output_range: Tuple[float],
                                  output_offset: Tuple[float],
-                                 overwrite: bool = False) -> list[tuple]:
+                                 overwrite: bool = False) -> Sequence[tuple]:
         """Write sampled waveforms in one file per channel and write all markers channels in separate files.
         Return a list with tuples. Each entry in the list represents one channel and contains:
         (wave_name, marker_name, hardware_channel_index, channel_name)
