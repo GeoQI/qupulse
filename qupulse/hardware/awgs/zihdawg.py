@@ -73,7 +73,8 @@ class HDAWGRepresentation:
                  reset: bool = False,
                  timeout: float = 120,
                  channel_grouping = HDAWGChannelGrouping.CHAN_GROUP_4x2,
-                 sample_rate_index = 0) -> None:
+                 sample_rate_index = 0,
+                 voltage_range=HDAWGVoltageRange.RNG_1V.value) -> None:
         """
         :param device_serial:     Device serial that uniquely identifies this device to the LabOne data server
         :param device_interface:  Either '1GbE' for ethernet or 'USB'
@@ -89,7 +90,8 @@ class HDAWGRepresentation:
         self._dev_ser = device_serial
         self.channel_grouping = channel_grouping
         self.sample_rate_index = sample_rate_index
-
+        self.voltage_range = voltage_range
+        
         if reset:
             # Create a base configuration: Disable all available outputs, awgs, demods, scopes,...
             zhinst.utils.disable_everything(self.api_session, self.serial)
@@ -161,8 +163,8 @@ class HDAWGRepresentation:
         settings = []
         settings.append(['/{}/system/awg/channelgrouping'.format(self.serial), self.channel_grouping.value])
         settings.append(['/{}/awgs/*/time'.format(self.serial), self.sample_rate_index])
-        settings.append(['/{}/sigouts/*/range'.format(self.serial), HDAWGVoltageRange.RNG_1V.value])
-        settings.append(['/{}/awgs/*/outputs/*/amplitude'.format(self.serial), 3.0])  # Default amplitude factor 1.0
+        settings.append(['/{}/sigouts/*/range'.format(self.serial), self.voltage_range])
+        settings.append(['/{}/awgs/*/outputs/*/amplitude'.format(self.serial), 1.0])  # Default amplitude factor 1.0
         settings.append(['/{}/awgs/*/outputs/*/modulation/mode'.format(self.serial), HDAWGModulationMode.OFF.value])
         settings.append(['/{}/awgs/*/userregs/*'.format(self.serial), 0])  # Reset all user registers to 0.
         settings.append(['/{}/awgs/*/single'.format(self.serial), 1])  # Single execution mode of sequence.
