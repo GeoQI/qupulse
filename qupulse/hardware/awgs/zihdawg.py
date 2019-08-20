@@ -91,6 +91,7 @@ class HDAWGRepresentation:
         self.channel_grouping = channel_grouping
         self.sample_rate_index = sample_rate_index
         self.voltage_range = voltage_range
+        self._logger = logging.getLogger('ziHDAWG')
         
         if reset:
             # Create a base configuration: Disable all available outputs, awgs, demods, scopes,...
@@ -163,7 +164,8 @@ class HDAWGRepresentation:
         settings = []
         settings.append(['/{}/system/awg/channelgrouping'.format(self.serial), self.channel_grouping.value])
         settings.append(['/{}/awgs/*/time'.format(self.serial), self.sample_rate_index])
-        settings.append(['/{}/sigouts/*/range'.format(self.serial), self.voltage_range])
+        if self.voltage_range is not None:
+            settings.append(['/{}/sigouts/*/range'.format(self.serial), self.voltage_range])
         settings.append(['/{}/awgs/*/outputs/*/amplitude'.format(self.serial), 1.0])  # Default amplitude factor 1.0
         settings.append(['/{}/awgs/*/outputs/*/modulation/mode'.format(self.serial), HDAWGModulationMode.OFF.value])
         settings.append(['/{}/awgs/*/userregs/*'.format(self.serial), 0])  # Reset all user registers to 0.
@@ -272,6 +274,7 @@ class HDAWGChannelGroup(AWG):
                  timeout: float) -> None:
         super().__init__(identifier)
         self._device = weakref.proxy(hdawg_device)
+        self.logger = logging.getLogger('ziHDAWG')
 
         if hdawg_device.channel_grouping == HDAWGChannelGrouping.CHAN_GROUP_4x2:
             if channels not in ((1, 2), (3, 4), (5, 6), (7, 8)):
@@ -610,10 +613,10 @@ class HDAWGWaveManager:
     def volt_to_amp(self, volt: np.ndarray, rng: float, offset: float) -> np.ndarray:
         """Scale voltage pulse data to dimensionless -1..1 amplitude of full range. If out of range throw error."""
         # TODO: Is offset included or excluded from rng?
-        if np.any(np.abs(volt-offset) > rng):
+        if np.any(np.abs(volt-offset) > (rng/2)):
             max_volt = np.max(np.abs(volt-offset))
-            raise HDAWGValueError(f'Voltage {max_volt} out of range {rng}')
-        return (volt-offset)/rng
+            raise HDAWGValueError(f'Voltage {max_volt} out of range {rng} = amplitude {rng/2}')
+        return (volt-offset)/(rng/2)
 
     def register(self, waveform: Waveform,
                  channels: Tuple[Optional[ChannelID], Optional[ChannelID]],
@@ -734,7 +737,8 @@ class HDAWGProgramManager:
         self._overwrite = False
         self._output_range = (1,)*self._number_of_channels
         self._output_offset = (0,)*self._number_of_channels
-
+        self._logger = logging.getLogger('ziHDAWG')
+        
     def remove(self, name: str) -> None:
         # TODO: Call removal of program waveforms on WaveManger.
         self._known_programs.pop(name)
@@ -766,6 +770,8 @@ class HDAWGProgramManager:
         self._output_offset = output_offset
 
         seqc_gen = self.program_to_seqc(program)
+        
+        self._logger.info('generated seqc')
         self._known_programs[name] = self.ProgramEntry(program,
                                                        self.generate_program_index(),
                                                        '\n'.join(seqc_gen))
@@ -789,6 +795,7 @@ class HDAWGProgramManager:
         # TODO: Improve performance, by not creating temporary variable each time.
         if prog.repetition_count > 1:
             template = '  {}'
+            self._logger.debug(f'program_to_seqc: repetition {prog.repetition_count}')
             yield 'repeat({:d}) {{'.format(prog.repetition_count)
         else:
             template = '{}'
@@ -796,7 +803,9 @@ class HDAWGProgramManager:
         if prog.is_leaf():
             yield template.format(self.waveform_to_seqc(prog.waveform))
         else:
-            for child in prog.children:
+            for ii, child in enumerate(prog.children):
+                if self._logger.getEffectiveLevel()<=logging.DEBUG:
+                    print(f'program_to_seqc: child {ii}/{len(prog.children)}')
                 for line in self.program_to_seqc(child):
                     yield template.format(line)
         if prog.repetition_count > 1:
@@ -806,6 +815,7 @@ class HDAWGProgramManager:
         """Return command that plays waveform."""
 
         logger = logging.getLogger('ziHDAWG')
+        logger.debug(f'waveform_to_seqc: duration {float(waveform.duration)}')
         registered_names = self._wave_manager.register_single_channels(waveform,
                                                                        self._channels,
                                                                        self._markers,
