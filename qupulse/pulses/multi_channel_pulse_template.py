@@ -89,7 +89,7 @@ class AtomicMultiChannelPulseTemplate(AtomicPulseTemplate, ParameterConstrainer)
         if not duration:
             duration = self._subtemplates[0].duration
             for subtemplate in self._subtemplates[1:]:
-                if almost_equal(duration.sympified_expression, subtemplate.duration.sympified_expression):
+                if almost_equal(duration.sympified_expression, subtemplate.duration.sympified_expression, epsilon=1e-10):
                     continue
                 else:
                     raise ValueError('Could not assert duration equality of {} and {}'.format(duration,
