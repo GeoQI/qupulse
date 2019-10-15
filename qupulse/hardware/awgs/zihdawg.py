@@ -357,14 +357,18 @@ class HDAWGChannelGroup(AWG):
         q_sample_rate = time_from_fraction(self.sample_rate, 10**9)
 
         # Adjust program to fit criteria.
+        #print('before!!!!')
+        #print(program)
         make_compatible(program,
-                        minimal_waveform_length=16,
-                        waveform_quantum=8,  # 8 samples for single, 4 for dual channel waaveforms.
+                        minimal_waveform_length=16, # to hdawg8 documentation says otherwise, but we need it otherwise make_compatible will sometimes render to a single waveform
+                        waveform_quantum=8,  # to hdawg8 documentation says otherwise, but we need it otherwise make_compatible will sometimes render to a single waveform
                         sample_rate=q_sample_rate)
+        #print('after!!!!')
+        #print(program)
 
         # TODO: Implement offset handling like in tabor driver.
         channel_ranges = tuple([self._device.range(self._channels[ii]) for ii in range(self.num_channels)])
-        logger.info(f'HDAWGChannelPair: call _program_manager.register {time.time()-t0:.2f} [s]')
+        logger.info(f'HDAWGChannelPair: call _program_manager.register (program duration {float(program.duration):.2f} [ns]) {time.time()-t0:.2f} [s]')
         self._program_manager.register(name,
                                        program,
                                        channels,
@@ -390,7 +394,7 @@ class HDAWGChannelGroup(AWG):
         if not sourcestring:
             raise HDAWGTypeError('sourcestring must not be empty or compilation will not start.')
         logger = logging.getLogger('ziHDAWG')
-
+        #print(sourcestring)
         # Transfer the AWG sequence program. Compilation starts automatically if sourcestring is set.
         self.awg_module.set('awgModule/compiler/sourcestring', sourcestring)
         self._poll_compile_and_upload_finished(logger)
@@ -625,7 +629,7 @@ class HDAWGWaveManager:
                  sample_rate: TimeType,
                  output_range: Tuple[float],
                  output_offset: Tuple[float],
-                 overwrite: bool = False) -> Tuple[str, str]:
+                 overwrite: bool = False, sample_factor=None,play_samples=None, write_constant=True) -> Tuple[str, str]:
         """Write sampled waveforms from all channels in a single file and write all marker channels in a different
         single file.
 
@@ -633,47 +637,128 @@ class HDAWGWaveManager:
          If a waveform or marker is not present, None will be returned in place of the name.
          The sampled waveforms files and markers files are cached based on a data hash value. If a wave or marker file
           with the same hash already exists, it will reuse the existing file and return its name."""
-        sample_times, n_samples = get_sample_times(waveform, sample_rate_in_GHz=sample_rate)
+        def is_constant_waveform(waveform, verbose=0):
+              if isinstance(waveform, MultiChannelWaveform):
+                     for subwave in waveform._sub_waveforms:
+                            if isinstance(subwave, TableWaveform):
+                                   vv=[e.v for e in subwave._table]
+                                   if np.any(np.array(vv)-vv[0]):
+                                          return False
+                                   if verbose:
+                                          print(f'is_constant_waveform: table entries {vv}')
+                            else:
+                                   return False
+                     return True
+              return False       
 
+        from qupulse.pulses import TablePT
+        from qupulse._program.waveforms import MultiChannelWaveform,TableWaveform
+        is_constant = is_constant_waveform(waveform)
+
+        sample_times, n_samples = get_sample_times(waveform, sample_rate_in_GHz=sample_rate, return_time_array=False)
+        if is_constant and write_constant is False:
+               print(f'waveform is_constant {is_constant} write_constant {write_constant}, do not render')
+               
+               n_samples_reduced=min(64, n_samples)
+               sample_times = np.arange(np.max(n_samples_reduced)) / float(sample_rate)
+               sample_times=sample_times[:n_samples_reduced]
+        else:
+               n_samples_reduced=n_samples
+               sample_times = np.arange(np.max(n_samples_reduced)) / float(sample_rate)
+               
         number_of_channels = len(channels)
         if number_of_channels>1:
             warnings.warn('not tested?')
 
+        
         if np.any([chan is not None for chan in channels]):
-            amplitude = np.zeros((n_samples, number_of_channels), dtype=float)
+            if play_samples is not None:
+                   sample_times=sample_times[:play_samples]
+
+                   n_samples_reduced =(play_samples)
+            else:
+                   n_samples_reduced=n_samples_reduced
+            amplitude = np.zeros((n_samples_reduced, number_of_channels), dtype=float)
             for idx, chan in enumerate(channels):
                 if chan is not None:
                     voltage = voltage_transformation[idx](waveform.get_sampled(chan, sample_times))
                     amplitude[:, idx] = self.volt_to_amp(voltage, output_range[idx], output_offset[idx])
 
+            if sample_factor is not None:
+                   amplitude=amplitude[::sample_factor, :]
             # Reuse sampled data, if available.
-            amplitude_hash = self.calc_hash(amplitude)
+            amplitude_hash = self.calc_hash(amplitude)+(amplitude.size)
             wave_name = self._wave_by_data.get(amplitude_hash)
             if wave_name is None:
                 wave_name = self.generate_wave_name(amplitude_hash)
                 self._wave_by_data[amplitude_hash] = wave_name
-            if overwrite or not self.full_file_path(wave_name).exists():
-                self.to_file(wave_name, amplitude, overwrite=overwrite)
+
+            is_zero_wave=np.all(amplitude==0)
+            is_constant_wave=np.allclose(amplitude,np.mean(amplitude))
+            #print(amplitude-np.mean(amplitude))
+            constant_wave_value=np.mean(amplitude)
+
+            if overwrite or not self.full_file_path(wave_name).exists():# and not is_constant_wave:
+                if write_constant or not is_constant_wave:
+                       self.to_file(wave_name, amplitude, overwrite=overwrite)
+                       print(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
+                else:
+                       print(f'   do not write {wave_name}')
+                
+
         else:
             wave_name = None
+            is_zero_wave=True
+            is_constant_wave=True
+            constant_wave_value=0
 
         if np.any([marker is not None for marker in markers]):
-            marker_output = np.zeros((n_samples, number_of_channels), dtype=np.uint8)
+            if play_samples is not None:
+                   sample_times=sample_times[:play_samples]
+
+                   n_samples_reduced =(play_samples)
+            else:
+                   n_samples_reduced=n_samples_reduced
+
+            marker_output = np.zeros((n_samples_reduced, number_of_channels), dtype=np.uint8)
             for idx, marker in enumerate(markers):
                 if marker is not None:
                     marker_output[:, idx] = waveform.get_sampled(marker, sample_times) != 0
+
+            if play_samples is not None:
+                   marker_output=marker_output[:play_samples, :]
+
+            if sample_factor is not None:
+                   marker_output=marker_output[::sample_factor, :]
 
             marker_hash = self.calc_hash(marker_output)
             marker_name = self._marker_by_data.get(marker_hash)
             if marker_name is None:
                 marker_name = self.generate_marker_name(marker_hash)
                 self._marker_by_data[marker_hash] = marker_name
-            if overwrite or not self.full_file_path(marker_name).exists():
-                self.to_file(marker_name, marker_output, fmt='%d', overwrite=overwrite)
+
+            is_zero_marker = np.all(marker_output==0)
+            is_constant_marker=np.allclose(marker_output,np.mean(marker_output))
+            constant_marker_value=np.mean(marker_output)
+
+            if overwrite or not self.full_file_path(marker_name).exists():# and not is_constant_marker:
+                if write_constant or not is_constant_marker:
+
+                    self.to_file(marker_name, marker_output, fmt='%d', overwrite=overwrite)
+                print(f'  write {marker_name}: size {marker_output.size} is_zero_marker {is_zero_marker}, is_constant_marker {is_constant_marker}')
+                
         else:
             marker_name = None
+            is_zero_marker = True
+            is_constant_marker=True
+            constant_marker_value=0
 
-        return wave_name, marker_name
+
+        metadata = {'is_zero': is_zero_wave and is_zero_marker, 'is_constant': is_constant_wave and is_constant_marker, 
+                    'constant_wave_value': constant_wave_value, 'constant_marker_value':constant_marker_value,
+                    'number_of_samples': n_samples, 'number_of_samples_reduced': n_samples_reduced}
+
+        return wave_name, marker_name, metadata
 
     def register_single_channels(self, waveform: Waveform,
                                  channels: Tuple[Optional[ChannelID], Optional[ChannelID]],
@@ -682,7 +767,7 @@ class HDAWGWaveManager:
                                  sample_rate: TimeType,
                                  output_range: Tuple[float],
                                  output_offset: Tuple[float],
-                                 overwrite: bool = False) -> Sequence[tuple]:
+                                 overwrite: bool = False, sample_factor=None,play_samples=None, write_constant=True) -> Sequence[tuple]:
         """Write sampled waveforms in one file per channel and write all markers channels in separate files.
         Return a list with tuples. Each entry in the list represents one channel and contains:
         (wave_name, marker_name, hardware_channel_index, channel_name)
@@ -696,18 +781,18 @@ class HDAWGWaveManager:
             
             if qupulse_channel_name is None and qupulse_marker_name is None:
                 continue
-            logger.debug(f'register_single_channels: register template channel {channel} to physical channel {idx+1}')
+            logger.debug(f'register_single_channels: register template channel {channel} to physical channel {idx+1} (duration {float(waveform.duration):2f} [ns]')
 
             marker = markers[idx]
-            (wave_name, marker_name) = self.register(waveform,
+            (wave_name, marker_name, metadata) = self.register(waveform,
                                                      channels=(channel,),
                                                      markers=(marker,),
                                                      voltage_transformation=(voltage_transformations[idx],),
                                                      sample_rate=sample_rate,
                                                      output_range=output_range,
                                                      output_offset=output_offset,
-                                                     overwrite=overwrite)
-            registered_names.append((wave_name, marker_name, zi_channel_idx, qupulse_channel_name))
+                                                     overwrite=overwrite, sample_factor=sample_factor, play_samples=play_samples, write_constant=write_constant)
+            registered_names.append((wave_name, marker_name, zi_channel_idx, qupulse_channel_name, metadata))
 
         return registered_names
 
@@ -738,6 +823,7 @@ class HDAWGProgramManager:
         self._output_range = (1,)*self._number_of_channels
         self._output_offset = (0,)*self._number_of_channels
         self._logger = logging.getLogger('ziHDAWG')
+        self.do_wait_count = 0
         
     def remove(self, name: str) -> None:
         # TODO: Call removal of program waveforms on WaveManger.
@@ -815,7 +901,7 @@ class HDAWGProgramManager:
         """Return command that plays waveform."""
 
         logger = logging.getLogger('ziHDAWG')
-        logger.debug(f'waveform_to_seqc: duration {float(waveform.duration)}')
+        logger.debug(f'waveform_to_seqc: duration {float(waveform.duration)} [ns]')
         registered_names = self._wave_manager.register_single_channels(waveform,
                                                                        self._channels,
                                                                        self._markers,
@@ -823,28 +909,160 @@ class HDAWGProgramManager:
                                                                        self._sample_rate,
                                                                        self._output_range,
                                                                        self._output_offset,
-                                                                       self._overwrite)
+                                                                       self._overwrite, write_constant=False)
 
         www = []
-        for wave_data in registered_names:
-            wf_name, mk_name, channel_idx, qupulse_channel_name = wave_data
+        defined_channel_idx = []
 
-            if mk_name is not None and wf_name is not None:
-                combined_name = f'add("{wf_name}", "{mk_name}")'
+        number_of_samples=0
+        wave_constant=[]
+        wave_zero=[]
+        mk_names=[]
+        for wave_data in registered_names:
+            wf_name, mk_name, channel_idx, qupulse_channel_name, metadata = wave_data
+            number_of_samples=metadata.get('number_of_samples', 0)
+
+            is_constant=metadata.get('is_constant', False)
+            is_zero=metadata.get('is_zero', False)
+            wave_constant.append(is_constant)
+            wave_zero.append(is_zero)
+            mk_names.append(mk_name)
+
+        no_marker=np.all(mk_names)
+        do_wait =  number_of_samples>2000 and np.all(wave_constant) and (number_of_samples%(32*4)==0)
+        #do_wait=do_wait and np.all(wave_zero)
+        do_wait=do_wait and self.do_wait_count<33332
+        
+        resample = (np.all(wave_constant) and number_of_samples%(4*32)==0) and not do_wait
+        logger.debug(f'   wave_constant {wave_constant},  number_of_samples {number_of_samples}, self.do_wait_count {self.do_wait_count}')
+        sample_factor=1
+        if do_wait:
+            self.do_wait_count=self.do_wait_count+1
+            sample_factor=1
+            wfactor=8
+            play_samples = 32*4
+            #play_samples=int(number_of_samples/2)
+            #play_samples=play_samples-(play_samples%(32*4))
+            wait_samples = ( number_of_samples-play_samples)/wfactor - 3
+            
+            if 0:
+                   play_samples=int(number_of_samples-32*8*4)
+                   wait_samples = ( number_of_samples-play_samples)/wfactor
+            
+            logger.info(f'   waveform is constant over all channels, using wait statement play_samples {play_samples}, wait_samples {wait_samples}')
+            wait_samples=int(wait_samples)
+            
+            registered_names = self._wave_manager.register_single_channels(waveform,
+                                                                       self._channels,
+                                                                       self._markers,
+                                                                       self._voltage_transformation,
+                                                                       self._sample_rate,
+                                                                       self._output_range,
+                                                                       self._output_offset,
+                                                                       self._overwrite,
+                                                                       play_samples=play_samples, )               
+            
+        if resample:
+            sample_factor=4
+            for ndiv in [8, 16,32,64,128]:
+                   if number_of_samples%(ndiv*32)==0:
+                          sample_factor=ndiv
+                   
+            logger.info(f'   waveform is constant over all channels, sample_factor {sample_factor}')
+
+            registered_names = self._wave_manager.register_single_channels(waveform,
+                                                                       self._channels,
+                                                                       self._markers,
+                                                                       self._voltage_transformation,
+                                                                       self._sample_rate,
+                                                                       self._output_range,
+                                                                       self._output_offset,
+                                                                       self._overwrite,
+                                                                       sample_factor=sample_factor)               
+        for wave_data in registered_names:
+            wf_name, mk_name, channel_idx, qupulse_channel_name, metadata = wave_data
+            logger.debug(f'{wf_name}, {mk_name}, {channel_idx}: {metadata} defined_channel_idx {defined_channel_idx}')
+            
+            is_zero=metadata.get('is_zero', False)
+            is_constant=metadata.get('is_constant', False)
+            number_of_samples=metadata.get('number_of_samples', 0)
+            constant_wave_value=metadata.get('constant_wave_value', None)
+            constant_marker_value=metadata.get('constant_marker_value', None)
+
+            def generate_wave_tag(wf_name, constant_value, return_name=False):
+                   if return_name:
+                          return '"' + wf_name +'"'
+                   if is_constant:
+                          nn=int(number_of_samples/sample_factor)
+                          if do_wait:
+                                 nn=play_samples
+                          if is_zero:
+                                 x_name=f'zeros({nn})'                   
+                          else:
+                            x_name=f'rect({nn}, {constant_value})'   
+                          return x_name
+                   else:
+                       return '"' + wf_name +'"'
+            if is_zero:
+                has_wave=False
+                if channel_idx % 4 == 0:
+                       if (channel_idx-1) in defined_channel_idx:
+                              has_wave=True
+                has_wave=False
+                if has_wave:
+                       # if there is already a wave, the duration is known and we can skip
+                       # has to work over multiple cores...s
+                     combined_name=f'""'
+                else:
+                   combined_name = generate_wave_tag(wf_name, constant_wave_value, return_name=False)
+#                   nn=int(number_of_samples/sample_factor)
+#                   if do_wait:
+#                          nn=play_samples
+#                   if is_zero:
+#                          combined_name=f'zeros({nn})'                   
+#                   else:
+#                     combined_name=f'rect({nn}, {constant_wave_value})'
+            elif mk_name is not None and wf_name is not None:
+                   combined_name1 = generate_wave_tag(wf_name, constant_wave_value)             
+                   combined_name2 = generate_wave_tag(mk_name, constant_marker_value)              
+                   combined_name = f'add({combined_name1}, {combined_name2})'
             elif mk_name is not None and wf_name is None:
-                combined_name = '"' + mk_name + '"'
+                   combined_name = generate_wave_tag(mk_name, constant_marker_value)              
             elif mk_name is None and wf_name is not None:
-                combined_name = '"' + wf_name + '"'
+                combined_name = generate_wave_tag(wf_name, constant_wave_value)
             else:
                 continue
 
+            defined_channel_idx.append(channel_idx)
+            logger.debug(f' adding {combined_name}')
             www.append(f'{channel_idx},{combined_name}')
 
         if not www:
             return ''
 
         playwave_content = ', '.join(www)
-        return f'playWave({playwave_content});'
+        
+
+        if resample:
+               if sample_factor==4:
+                      play_string=f'playWave({playwave_content}, AWG_RATE_600MHZ);'
+               elif sample_factor==8:
+                      play_string=f'playWave({playwave_content}, AWG_RATE_300MHZ);'
+               elif sample_factor==16:
+                      play_string=f'playWave({playwave_content}, AWG_RATE_150MHZ);'
+               elif sample_factor==32:
+                      play_string=f'playWave({playwave_content}, AWG_RATE_75MHZ);'
+               elif sample_factor==64:
+                      play_string=f'playWave({playwave_content}, AWG_RATE_37P5MHZ);'
+               elif sample_factor==128:
+                      play_string=f'playWave({playwave_content}, AWG_RATE_18P75MHZ);'
+               else:
+                      raise Exception()
+        else:
+                      play_string=f'playWave({playwave_content});'
+        if do_wait:
+               play_string+=f'\nwait({wait_samples});\n'
+        return play_string
 
     # noinspection PyMethodMayBeStatic
     def case_wrap_program(self, prog: ProgramEntry, prog_name, indent: int = 8) -> str:
@@ -867,7 +1085,7 @@ class HDAWGProgramManager:
         const PROG_SEL = 0; // User register for switching current program.
 
         // Start of analog waveform definitions.
-        wave idle = zeros(16); // Default idle waveform.
+        wave idle = zeros(32); // Default idle waveform.
         _analog_waveform_block_
 
         // Start of marker waveform definitions.

@@ -248,7 +248,7 @@ def evaluate_lambdified(expression: Union[sympy.Expr, numpy.ndarray],
     return lambdified(**parameters), lambdified
 
 
-def almost_equal(lhs: sympy.Expr, rhs: sympy.Expr, epsilon: float=1e-15) -> Optional[bool]:
+def almost_equal(lhs: sympy.Expr, rhs: sympy.Expr, epsilon: float=1e-12) -> Optional[bool]:
     """Returns True (or False) if the two expressions are almost equal (or not). Returns None if this cannot be
     determined."""
     relation = sympy.simplify(sympy.Abs(lhs - rhs) <= epsilon)

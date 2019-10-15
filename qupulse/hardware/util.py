@@ -93,7 +93,7 @@ def find_positions(data: Sequence, to_find: Sequence) -> np.ndarray:
 
 
 def get_sample_times(waveforms: Union[Sequence[Waveform], Waveform],
-                     sample_rate_in_GHz: TimeType, tolerance: float = 1e-10) -> Tuple[np.array, np.array]:
+                     sample_rate_in_GHz: TimeType, tolerance: float = 1e-10, return_time_array= True) -> Tuple[np.array, np.array]:
     """Calculates the sample times required for the longest waveform in waveforms and returns it together with an array
     of the lengths.
 
@@ -111,7 +111,7 @@ def get_sample_times(waveforms: Union[Sequence[Waveform], Waveform],
         Number of samples of each waveform
     """
     if not isinstance(waveforms, Sequence):
-        sample_times, n_samples = get_sample_times([waveforms], sample_rate_in_GHz)
+        sample_times, n_samples = get_sample_times([waveforms], sample_rate_in_GHz, return_time_array=return_time_array)
         return sample_times, n_samples.squeeze()
 
     assert len(waveforms) > 0, "An empty waveform list is not allowed"
@@ -138,6 +138,9 @@ def get_sample_times(waveforms: Union[Sequence[Waveform], Waveform],
         segment_lengths.append(rounded_segment_length)
 
     segment_lengths = np.asarray(segment_lengths, dtype=np.uint64)
-    time_array = np.arange(np.max(segment_lengths)) / float(sample_rate_in_GHz)
+    if return_time_array:
+           time_array = np.arange(np.max(segment_lengths)) / float(sample_rate_in_GHz)
+    else:
+           time_array = None
 
     return time_array, segment_lengths
