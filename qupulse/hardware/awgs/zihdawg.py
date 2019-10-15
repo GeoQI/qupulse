@@ -657,7 +657,7 @@ class HDAWGWaveManager:
 
         sample_times, n_samples = get_sample_times(waveform, sample_rate_in_GHz=sample_rate, return_time_array=False)
         if is_constant and write_constant is False:
-               print(f'waveform is_constant {is_constant} write_constant {write_constant}, do not render')
+               self.logger.info(f'waveform is_constant {is_constant} write_constant {write_constant}, do not render')
                
                n_samples_reduced=min(64, n_samples)
                sample_times = np.arange(np.max(n_samples_reduced)) / float(sample_rate)
@@ -701,9 +701,9 @@ class HDAWGWaveManager:
             if overwrite or not self.full_file_path(wave_name).exists():# and not is_constant_wave:
                 if write_constant or not is_constant_wave:
                        self.to_file(wave_name, amplitude, overwrite=overwrite)
-                       print(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
+                       self.logger.info(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
                 else:
-                       print(f'   do not write {wave_name}')
+                       self.logger.info(f'   do not write {wave_name}')
                 
 
         else:
@@ -745,7 +745,7 @@ class HDAWGWaveManager:
                 if write_constant or not is_constant_marker:
 
                     self.to_file(marker_name, marker_output, fmt='%d', overwrite=overwrite)
-                print(f'  write {marker_name}: size {marker_output.size} is_zero_marker {is_zero_marker}, is_constant_marker {is_constant_marker}')
+                self.logger.debug(f'  write {marker_name}: size {marker_output.size} is_zero_marker {is_zero_marker}, is_constant_marker {is_constant_marker}')
                 
         else:
             marker_name = None
@@ -949,7 +949,7 @@ class HDAWGProgramManager:
                    play_samples=int(number_of_samples-32*8*4)
                    wait_samples = ( number_of_samples-play_samples)/wfactor
             
-            logger.info(f'   waveform is constant over all channels, using wait statement play_samples {play_samples}, wait_samples {wait_samples}')
+            logger.debug(f'   waveform is constant over all channels, using wait statement play_samples {play_samples}, wait_samples {wait_samples}')
             wait_samples=int(wait_samples)
             
             registered_names = self._wave_manager.register_single_channels(waveform,
@@ -968,7 +968,7 @@ class HDAWGProgramManager:
                    if number_of_samples%(ndiv*32)==0:
                           sample_factor=ndiv
                    
-            logger.info(f'   waveform is constant over all channels, sample_factor {sample_factor}')
+            logger.debug(f'   waveform is constant over all channels, sample_factor {sample_factor}')
 
             registered_names = self._wave_manager.register_single_channels(waveform,
                                                                        self._channels,
