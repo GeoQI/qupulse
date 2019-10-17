@@ -558,6 +558,8 @@ class HDAWGWaveManager:
     # TODO: Manage side effects if reusing data over several programs and a shared waveform is overwritten.
 
     def __init__(self, user_dir: str, awg_identifier: str) -> None:
+        self.logger = logging.getLogger('ziHDAWG')
+
         self._wave_by_data = dict()  # type: Dict[int, str]
         self._marker_by_data = dict()  # type: Dict[int, str]
         self._file_type = 'csv'
@@ -701,9 +703,9 @@ class HDAWGWaveManager:
             if overwrite or not self.full_file_path(wave_name).exists():# and not is_constant_wave:
                 if write_constant or not is_constant_wave:
                        self.to_file(wave_name, amplitude, overwrite=overwrite)
-                       self.logger.info(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
+                       self.logger.debug(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
                 else:
-                       self.logger.info(f'   do not write {wave_name}')
+                       self.logger.debug(f'   do not write {wave_name}')
                 
 
         else:
@@ -928,19 +930,24 @@ class HDAWGProgramManager:
             wave_zero.append(is_zero)
             mk_names.append(mk_name)
 
+        play_samples_0 = 128
+        
         no_marker=np.all(mk_names)
-        do_wait =  number_of_samples>2000 and np.all(wave_constant) and (number_of_samples%(32*4)==0)
-        #do_wait=do_wait and np.all(wave_zero)
+        do_wait =  number_of_samples>play_samples_0+(4)*8 and np.all(wave_constant) and ( (number_of_samples-play_samples_0) %(32)==0) # allow almost everything
+        #do_wait =  number_of_samples>2000 and np.all(wave_constant) and ( (number_of_samples) %(32*4)==0)
         do_wait=do_wait and self.do_wait_count<33332
         
         resample = (np.all(wave_constant) and number_of_samples%(4*32)==0) and not do_wait
+        
+        resample=False # disable resampling for testing
+        
         logger.debug(f'   wave_constant {wave_constant},  number_of_samples {number_of_samples}, self.do_wait_count {self.do_wait_count}')
         sample_factor=1
         if do_wait:
             self.do_wait_count=self.do_wait_count+1
             sample_factor=1
             wfactor=8
-            play_samples = 32*4
+            play_samples = play_samples_0
             #play_samples=int(number_of_samples/2)
             #play_samples=play_samples-(play_samples%(32*4))
             wait_samples = ( number_of_samples-play_samples)/wfactor - 3
