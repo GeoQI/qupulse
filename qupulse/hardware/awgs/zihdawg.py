@@ -640,6 +640,7 @@ class HDAWGWaveManager:
          The sampled waveforms files and markers files are cached based on a data hash value. If a wave or marker file
           with the same hash already exists, it will reuse the existing file and return its name."""
         def is_constant_waveform(waveform, verbose=0):
+              import sqt.utils.qupulse_utils
               if isinstance(waveform, MultiChannelWaveform):
                      for subwave in waveform._sub_waveforms:
                             if isinstance(subwave, TableWaveform):
@@ -648,6 +649,8 @@ class HDAWGWaveManager:
                                           return False
                                    if verbose:
                                           print(f'is_constant_waveform: table entries {vv}')
+                            elif isinstance(subwave, sqt.utils.qupulse_utils.ConstantWaveform):
+                                   return True
                             else:
                                    return False
                      return True
@@ -659,7 +662,7 @@ class HDAWGWaveManager:
 
         sample_times, n_samples = get_sample_times(waveform, sample_rate_in_GHz=sample_rate, return_time_array=False)
         if is_constant and write_constant is False:
-               self.logger.info(f'waveform is_constant {is_constant} write_constant {write_constant}, do not render')
+               self.logger.debug(f'waveform is_constant {is_constant} write_constant {write_constant}, do not render')
                
                n_samples_reduced=min(64, n_samples)
                sample_times = np.arange(np.max(n_samples_reduced)) / float(sample_rate)
@@ -674,6 +677,8 @@ class HDAWGWaveManager:
 
         
         if np.any([chan is not None for chan in channels]):
+            self.logger.debug(f'waveform play_samples {play_samples}')
+
             if play_samples is not None:
                    sample_times=sample_times[:play_samples]
 
