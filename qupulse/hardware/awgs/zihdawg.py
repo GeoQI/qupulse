@@ -551,6 +551,28 @@ class HDAWGChannelGroup(AWG):
 # backwards compat
 HDAWGChannelPair = HDAWGChannelGroup
 
+def is_constant_waveform(waveform, verbose=0):
+              import sqt.utils.qupulse_utils
+              if isinstance(waveform, MultiChannelWaveform):
+                     for subwave in waveform._sub_waveforms:
+                            if isinstance(subwave, TableWaveform):
+                                   vv=[e.v for e in subwave._table]
+                                   if np.any(np.array(vv)-vv[0]):
+                                          return False
+                                   if verbose:
+                                          print(f'is_constant_waveform: table entries {vv}')
+                            elif isinstance(subwave, sqt.utils.qupulse_utils.ConstantWaveform):
+                                   return True
+                            elif getattr(subwave, '_is_constant_waveform', False):
+                                   return True
+                            else:
+                                   return False
+                     return True
+              return False  
+
+from qupulse.pulses import TablePT
+from qupulse._program.waveforms import MultiChannelWaveform,TableWaveform
+       
 class HDAWGWaveManager:
     """Manages waveforms in memory and I/O of sampled data to disk."""
     # TODO: Manage references and delete csv file when no program uses it.
@@ -560,6 +582,8 @@ class HDAWGWaveManager:
     def __init__(self, user_dir: str, awg_identifier: str) -> None:
         self.logger = logging.getLogger('ziHDAWG')
 
+        self._unique_waveform_hash = False # True = hack
+        self._wave_counter = 0
         self._wave_by_data = dict()  # type: Dict[int, str]
         self._marker_by_data = dict()  # type: Dict[int, str]
         self._file_type = 'csv'
@@ -610,7 +634,11 @@ class HDAWGWaveManager:
 
     def generate_wave_name(self, data_hash: int):
         """Unique name of wave data."""
-        return self._awg_prefix + '_' + str(abs(data_hash))
+        name = self._awg_prefix + '_' + str(abs(data_hash))
+        if self._unique_waveform_hash:
+               self._wave_counter = self._wave_counter+1
+               name+=f'_{self._wave_counter}'
+        return name
 
     def generate_marker_name(self, data_hash: int):
         """Unique name of marker data."""
@@ -639,25 +667,8 @@ class HDAWGWaveManager:
          If a waveform or marker is not present, None will be returned in place of the name.
          The sampled waveforms files and markers files are cached based on a data hash value. If a wave or marker file
           with the same hash already exists, it will reuse the existing file and return its name."""
-        def is_constant_waveform(waveform, verbose=0):
-              import sqt.utils.qupulse_utils
-              if isinstance(waveform, MultiChannelWaveform):
-                     for subwave in waveform._sub_waveforms:
-                            if isinstance(subwave, TableWaveform):
-                                   vv=[e.v for e in subwave._table]
-                                   if np.any(np.array(vv)-vv[0]):
-                                          return False
-                                   if verbose:
-                                          print(f'is_constant_waveform: table entries {vv}')
-                            elif isinstance(subwave, sqt.utils.qupulse_utils.ConstantWaveform):
-                                   return True
-                            else:
-                                   return False
-                     return True
-              return False       
+     
 
-        from qupulse.pulses import TablePT
-        from qupulse._program.waveforms import MultiChannelWaveform,TableWaveform
         is_constant = is_constant_waveform(waveform)
 
         sample_times, n_samples = get_sample_times(waveform, sample_rate_in_GHz=sample_rate, return_time_array=False)
@@ -707,10 +718,11 @@ class HDAWGWaveManager:
 
             if overwrite or not self.full_file_path(wave_name).exists():# and not is_constant_wave:
                 if write_constant or not is_constant_wave:
+                       self.logger.info(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
                        self.to_file(wave_name, amplitude, overwrite=overwrite)
-                       self.logger.debug(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
+                       self.logger.info(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
                 else:
-                       self.logger.debug(f'   do not write {wave_name}')
+                       self.logger.info(f'   do not write {wave_name}')
                 
 
         else:
@@ -831,6 +843,7 @@ class HDAWGProgramManager:
         self._output_offset = (0,)*self._number_of_channels
         self._logger = logging.getLogger('ziHDAWG')
         self.do_wait_count = 0
+        self.allow_mixed_waveforms =  True
         
     def remove(self, name: str) -> None:
         # TODO: Call removal of program waveforms on WaveManger.
@@ -864,7 +877,7 @@ class HDAWGProgramManager:
 
         seqc_gen = self.program_to_seqc(program)
         
-        self._logger.info('generated seqc')
+        self._logger.info('HDAWGProgramManager.register: generated seqc')
         self._known_programs[name] = self.ProgramEntry(program,
                                                        self.generate_program_index(),
                                                        '\n'.join(seqc_gen))
@@ -886,6 +899,7 @@ class HDAWGProgramManager:
 
     def program_to_seqc(self, prog: Loop) -> Iterator[str]:
         # TODO: Improve performance, by not creating temporary variable each time.
+        self._logger.debug(f'program_to_seqc: start: prog.repetition_count {prog.repetition_count}')
         if prog.repetition_count > 1:
             template = '  {}'
             self._logger.debug(f'program_to_seqc: repetition {prog.repetition_count}')
@@ -894,6 +908,8 @@ class HDAWGProgramManager:
             template = '{}'
 
         if prog.is_leaf():
+            self._logger.debug(f'program_to_seqc: prog.is_leaf() {prog.is_leaf()}')
+            self._logger.debug(f'program_to_seqc: prog {prog}')
             yield template.format(self.waveform_to_seqc(prog.waveform))
         else:
             for ii, child in enumerate(prog.children):
@@ -935,18 +951,32 @@ class HDAWGProgramManager:
             wave_zero.append(is_zero)
             mk_names.append(mk_name)
 
-        play_samples_0 = 128
+        play_samples_0 = 32
         
+        all_constant = np.all(wave_constant)
+
+
+
         no_marker=np.all(mk_names)
-        do_wait =  number_of_samples>play_samples_0+(4)*8 and np.all(wave_constant) and ( (number_of_samples-play_samples_0) %(32)==0) # allow almost everything
+        do_wait =  number_of_samples>play_samples_0+(4)*8 and all_constant and ( (number_of_samples-play_samples_0) %(32)==0) # allow almost everything
         #do_wait =  number_of_samples>2000 and np.all(wave_constant) and ( (number_of_samples) %(32*4)==0)
-        do_wait=do_wait and self.do_wait_count<33332
+        do_wait=do_wait and self.do_wait_count>=0
+
+        if not do_wait and not self.allow_mixed_waveforms:
+                       registered_names = self._wave_manager.register_single_channels(waveform,
+                                                                       self._channels,
+                                                                       self._markers,
+                                                                       self._voltage_transformation,
+                                                                       self._sample_rate,
+                                                                       self._output_range,
+                                                                       self._output_offset,
+                                                                       self._overwrite, write_constant=True)
         
         resample = (np.all(wave_constant) and number_of_samples%(4*32)==0) and not do_wait
         
         resample=False # disable resampling for testing
         
-        logger.debug(f'   wave_constant {wave_constant},  number_of_samples {number_of_samples}, self.do_wait_count {self.do_wait_count}')
+        logger.info(f'   wave_constant {wave_constant},  number_of_samples {number_of_samples}, self.do_wait_count {self.do_wait_count}')
         sample_factor=1
         if do_wait:
             self.do_wait_count=self.do_wait_count+1
@@ -961,7 +991,7 @@ class HDAWGProgramManager:
                    play_samples=int(number_of_samples-32*8*4)
                    wait_samples = ( number_of_samples-play_samples)/wfactor
             
-            logger.debug(f'   waveform is constant over all channels, using wait statement play_samples {play_samples}, wait_samples {wait_samples}')
+            logger.info(f'   waveform is constant over all channels, using wait statement play_samples {play_samples}, wait_samples {wait_samples}')
             wait_samples=int(wait_samples)
             
             registered_names = self._wave_manager.register_single_channels(waveform,
@@ -1003,6 +1033,8 @@ class HDAWGProgramManager:
 
             def generate_wave_tag(wf_name, constant_value, return_name=False):
                    if return_name:
+                          if wf_name is None:
+                                 return None
                           return '"' + wf_name +'"'
                    if is_constant:
                           nn=int(number_of_samples/sample_factor)
@@ -1014,7 +1046,15 @@ class HDAWGProgramManager:
                             x_name=f'rect({nn}, {constant_value})'   
                           return x_name
                    else:
-                       return '"' + wf_name +'"'
+                          if wf_name is None:
+                                 return None
+                          return '"' + wf_name +'"'
+            if self.allow_mixed_waveforms:
+                   return_name=False
+            else:
+                   return_name= not do_wait # if not do_wait we could havea mixture of waveform types, which the sequencer cannot handle
+                   is_zero=False; return_name= True # hack
+            
             if is_zero:
                 has_wave=False
                 if channel_idx % 4 == 0:
@@ -1026,7 +1066,11 @@ class HDAWGProgramManager:
                        # has to work over multiple cores...s
                      combined_name=f'""'
                 else:
-                   combined_name = generate_wave_tag(wf_name, constant_wave_value, return_name=False)
+                   combined_name = generate_wave_tag(wf_name, constant_wave_value, return_name=return_name)
+                   combined_name_m = generate_wave_tag(mk_name, constant_marker_value, return_name)              
+                   if combined_name is None:
+                          combined_name=combined_name_m
+                          #combined_name='""' 
 #                   nn=int(number_of_samples/sample_factor)
 #                   if do_wait:
 #                          nn=play_samples
@@ -1035,13 +1079,13 @@ class HDAWGProgramManager:
 #                   else:
 #                     combined_name=f'rect({nn}, {constant_wave_value})'
             elif mk_name is not None and wf_name is not None:
-                   combined_name1 = generate_wave_tag(wf_name, constant_wave_value)             
-                   combined_name2 = generate_wave_tag(mk_name, constant_marker_value)              
+                   combined_name1 = generate_wave_tag(wf_name, constant_wave_value, return_name)             
+                   combined_name2 = generate_wave_tag(mk_name, constant_marker_value, return_name)              
                    combined_name = f'add({combined_name1}, {combined_name2})'
             elif mk_name is not None and wf_name is None:
-                   combined_name = generate_wave_tag(mk_name, constant_marker_value)              
+                   combined_name = generate_wave_tag(mk_name, constant_marker_value,return_name)              
             elif mk_name is None and wf_name is not None:
-                combined_name = generate_wave_tag(wf_name, constant_wave_value)
+                combined_name = generate_wave_tag(wf_name, constant_wave_value,return_name)
             else:
                 continue
 
@@ -1052,9 +1096,15 @@ class HDAWGProgramManager:
         if not www:
             return ''
 
+        remaining_channels = set(range(1, 9))-set(defined_channel_idx)
+        if 0:
+               for c in remaining_channels:
+                      www.append(f'{c}, ""')
+               
+        idx=np.argsort( [w[0] for w in www])
+        www = [www[ii] for ii in idx]
         playwave_content = ', '.join(www)
         
-
         if resample:
                if sample_factor==4:
                       play_string=f'playWave({playwave_content}, AWG_RATE_600MHZ);'
@@ -1074,6 +1124,11 @@ class HDAWGProgramManager:
                       play_string=f'playWave({playwave_content});'
         if do_wait:
                play_string+=f'\nwait({wait_samples});\n'
+               
+        if 0:
+               # hack
+               print('### play_string:' )
+               print(play_string)
         return play_string
 
     # noinspection PyMethodMayBeStatic
@@ -1083,6 +1138,18 @@ class HDAWGProgramManager:
         return textwrap.indent(case_str, ' ' * indent)
 
     def assemble_case_block(self) -> str:
+           
+        # hack
+        if 1:
+               if len(self._known_programs.items())!=1:
+                      raise NotImplementedError('for multiple program suse the case blocks' )
+               code=''
+               for prog_name, entry in self._known_programs.items():
+                      code+=f'// {prog_name}\n' 
+                      code+=entry.seqc_rep
+                      code+='\n' 
+                      
+               return code
         case_block = []
         for name, entry in self._known_programs.items():
             case_block.append(self.case_wrap_program(entry, name))
@@ -1091,7 +1158,7 @@ class HDAWGProgramManager:
     # TODO: Make sure waitWave is really not required.
     # TODO: Is prefetching useful?
     # Structure of sequencer program.
-    sequencer_template = textwrap.dedent("""\
+    sequencer_template_old = textwrap.dedent("""\
         //////////  qupulse sequence (_upload_time_) //////////
         
         const PROG_SEL = 0; // User register for switching current program.
@@ -1115,7 +1182,22 @@ class HDAWGProgramManager:
             }
         }
         """)
+               
+    # hack
+    sequencer_template = textwrap.dedent("""\
+        //////////  qupulse sequence (_upload_time_) //////////
+        
+        // Start of analog waveform definitions.
+        wave idle = zeros(32); // Default idle waveform.
+        _analog_waveform_block_
 
+        // Start of marker waveform definitions.
+        _marker_waveform_block_
+        
+        while(true) {
+        _case_block_
+        }
+        """)
 
 class HDAWGException(Exception):
     """Base exception class for HDAWG errors."""
@@ -1155,7 +1237,7 @@ class HDAWGUploadException(HDAWGException):
         return "Upload to the instrument failed."
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and 0:
     from qupulse.pulses import TablePT, SequencePT, RepetitionPT
     if 0:
         hdawg = HDAWGRepresentation(device_serial='DEV8049') # , device_interface='USB')
