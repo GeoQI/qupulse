@@ -19,12 +19,80 @@ except ImportError:
 import numpy as np
 import textwrap
 import time
+import re
+import itertools
 
 from qupulse.utils.types import ChannelID, TimeType, time_from_fraction
 from qupulse._program._loop import Loop, make_compatible
 from qupulse._program.waveforms import Waveform
 from qupulse.hardware.awgs.base import AWG, ChannelNotFoundException
 from qupulse.hardware.util import get_sample_times
+
+def correct_sequence(seqc):
+    """ Correct a ZI HDAWG8 seqc program so that all cores are treated equaly """
+    #extract waves from a playWave command and return them as tuple
+    seqc=str(seqc)
+    def get_waves(line):
+        m = re.search(r'^playWave\((?P<waves>.*)\);', line)
+        waves = m.group('waves')
+        list_waves = tuple(re.split(r',\s*(?![^()]*\))', waves))
+        return list_waves
+    
+    #create unique playwave set
+    pws = set()
+    for l in seqc.split('\n'):
+        if (l.strip().startswith('playWave')):
+            w = get_waves(l)
+            pws.add(w)
+
+    pws_index = {pw: i for i,pw in enumerate(pws)}
+    
+    #create anti-optimization tags
+    tag_declarations = ""
+    for i in range(len(pws)):
+        tag = f"{i+1:016b}".replace('1','2')
+        rle_tag = [(k,len(list(g))) for k, g in itertools.groupby(tag)]
+        #tag_v = ",".join(['marker(1,2)' if t == '1' else 'marker(1,0)' for t in tag])
+        tag_v = ",".join([f'marker({t[1]},{t[0]})' for t in rle_tag])
+
+        tag_v = f'wave tag{i:06d} = join({tag_v});\n'
+        tag_declarations += tag_v
+        
+    #create declaration of csv waves
+    csv_waves = set()
+    for pw in pws:
+        for wave in pw[1::2]:
+            if wave[0] == '"':
+                csv_waves.add(wave.strip('"'))
+
+    csv_declarations = ""
+    for wave in csv_waves:
+        decl = f'wave {wave} = "{wave}";\n'
+        csv_declarations += decl
+    
+    #do the correction
+    res = tag_declarations + csv_declarations
+    for l in seqc.split('\n'):
+        if (l.strip().startswith('playWave')):
+            w = get_waves(l)
+
+
+            tagi = pws_index[w]
+            tag = "tag{:06d}".format(tagi) # modified BK, original tag = "tag{:06d}".format(tagi+1)
+            w2 = []
+            for i,it in enumerate(w):
+                if (i % 2) == 1:
+                    if it[0] == '"':
+                        it = it.strip('"')
+                    it += f"+{tag}"
+                w2.append(it)
+            waves_c = ",".join(w2)
+            res += f"playWave({waves_c});\n"
+
+        else:
+            res += l + '\n'
+                
+    return res
 
 class HDAWGChannelGrouping(Enum):
     """How many independent sequencers should run on the AWG and how the outputs should be grouped by sequencer."""
@@ -299,6 +367,7 @@ class HDAWGChannelGroup(AWG):
         self._program_manager = HDAWGProgramManager(self._wave_manager, number_of_channels=len(channels))
         self._current_program = None  # Currently armed program.
 
+        self.transform_zi_seqc=False
     @property
     def num_channels(self) -> int:
         """Number of channels"""
@@ -385,6 +454,13 @@ class HDAWGChannelGroup(AWG):
         logger.debug('-----------')
         logger.debug(awg_sequence)
         logger.debug('-----------')
+        
+        self._awg_sequence=awg_sequence
+        
+        if self.transform_zi_seqc:
+               logger.info('HDAWGProgramManager.register: transform seqc')
+               awg_sequence = correct_sequence(awg_sequence)
+
         self._upload_sourcestring(awg_sequence)
         logger.info(f'HDAWGChannelPair: upload complete {time.time()-t0:.2f} [s]')
 
@@ -718,11 +794,11 @@ class HDAWGWaveManager:
 
             if overwrite or not self.full_file_path(wave_name).exists():# and not is_constant_wave:
                 if write_constant or not is_constant_wave:
-                       self.logger.info(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
+                       self.logger.debug(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
                        self.to_file(wave_name, amplitude, overwrite=overwrite)
-                       self.logger.info(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
+                       self.logger.debug(f'  write {wave_name}: size {amplitude.size} is_zero_wave {is_zero_wave}, is_constant_wave {is_constant_wave}')
                 else:
-                       self.logger.info(f'   do not write {wave_name}')
+                       self.logger.debug(f'   do not write {wave_name}')
                 
 
         else:
@@ -845,6 +921,8 @@ class HDAWGProgramManager:
         self.do_wait_count = 0
         self.allow_mixed_waveforms =  True
         
+        self.transform_zi_seqc=False
+        
     def remove(self, name: str) -> None:
         # TODO: Call removal of program waveforms on WaveManger.
         self._known_programs.pop(name)
@@ -877,10 +955,13 @@ class HDAWGProgramManager:
 
         seqc_gen = self.program_to_seqc(program)
         
+        seqc_program = '\n'.join(seqc_gen)
+        self._seqc_program = seqc_program
+        
         self._logger.info('HDAWGProgramManager.register: generated seqc')
         self._known_programs[name] = self.ProgramEntry(program,
                                                        self.generate_program_index(),
-                                                       '\n'.join(seqc_gen))
+                                                       seqc_program)
 
     def assemble_sequencer_program(self) -> str:
         awg_sequence = HDAWGProgramManager.sequencer_template.replace('_upload_time_', time.strftime('%c'))
@@ -976,22 +1057,20 @@ class HDAWGProgramManager:
         
         resample=False # disable resampling for testing
         
-        logger.info(f'   wave_constant {wave_constant},  number_of_samples {number_of_samples}, self.do_wait_count {self.do_wait_count}')
+        logger.debug(f'   wave_constant {wave_constant},  number_of_samples {number_of_samples}, self.do_wait_count {self.do_wait_count}')
         sample_factor=1
         if do_wait:
             self.do_wait_count=self.do_wait_count+1
             sample_factor=1
             wfactor=8
             play_samples = play_samples_0
-            #play_samples=int(number_of_samples/2)
-            #play_samples=play_samples-(play_samples%(32*4))
             wait_samples = ( number_of_samples-play_samples)/wfactor - 3
             
             if 0:
                    play_samples=int(number_of_samples-32*8*4)
                    wait_samples = ( number_of_samples-play_samples)/wfactor
             
-            logger.info(f'   waveform is constant over all channels, using wait statement play_samples {play_samples}, wait_samples {wait_samples}')
+            logger.debug(f'   waveform is constant over all channels, using wait statement play_samples {play_samples}, wait_samples {wait_samples}')
             wait_samples=int(wait_samples)
             
             registered_names = self._wave_manager.register_single_channels(waveform,
