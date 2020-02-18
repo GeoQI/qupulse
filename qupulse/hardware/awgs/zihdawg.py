@@ -131,7 +131,7 @@ class HDAWGRepresentation:
     """HDAWGRepresentation represents an HDAWG8 instruments and manages a LabOne data server api session. A data server
     must be running and the device be discoverable. Channels are per default grouped into pairs."""
 
-    __version__ = 0.2
+    __version__ = 0.3
     
     def __init__(self, device_serial: str = None,
                  device_interface: str = '1GbE',
@@ -480,8 +480,17 @@ class HDAWGChannelGroup(AWG):
         if process takes less time than timeout."""
         time_start = time.time()
         logger.info('Compilation started')
-        while self.awg_module.getInt('awgModule/compiler/status') == -1:
-            time.sleep(0.1)
+        try:
+            while self.awg_module.getInt('awgModule/compiler/status') == -1:
+                time.sleep(0.1)
+        except RuntimeError as ex:
+            if not 'Timeout during set in awgModule module' in str(ex):
+                # we don't know this exception
+                raise ex
+            # try once more
+            while self.awg_module.getInt('awgModule/compiler/status') == -1:
+                time.sleep(0.1)
+            
         if time.time() - time_start > self._timeout:
             raise HDAWGTimeoutError("Compilation timeout out")
 
