@@ -244,7 +244,7 @@ class HDAWGRepresentation:
     """HDAWGRepresentation represents an HDAWG8 instruments and manages a LabOne data server api session. A data server
     must be running and the device be discoverable. Channels are per default grouped into pairs."""
 
-    __version__ = 0.4
+    __version__ = 0.5
     
     def __init__(self, device_serial: str = None,
                  device_interface: str = '1GbE',
