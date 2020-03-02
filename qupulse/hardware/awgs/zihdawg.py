@@ -28,6 +28,119 @@ from qupulse._program.waveforms import Waveform
 from qupulse.hardware.awgs.base import AWG, ChannelNotFoundException
 from qupulse.hardware.util import get_sample_times
 
+def correct_sequence_v2(seqc,cores=[0,1,2,3]):
+    #extract waves from a playWave command and return them as tuple
+    def get_waves(line):
+        m = re.search(r'^playWave\((?P<waves>.*)\);', line)
+        waves = m.group('waves')
+        list_waves = tuple(re.split(r',\s*(?![^()]*\))', waves))
+        return list_waves
+
+    def make_csv_path(csv):
+        base = Path.home().joinpath(r'Documents/Zurich Instruments/LabOne/WebServer/awg/waves')
+        return base.joinpath(f'{csv:s}.csv')
+
+    def count_lines_csv(csv):
+        path = make_csv_path(csv)
+        with open(path,'r') as f:
+            num_lines = sum(1 for line in f)
+        return num_lines
+    
+    #calculate length of waves in a playWave instruction
+    #it assumes that they have the same length
+    def calculate_len_grouped(waves):
+        #try with inline
+        for wave in waves:
+            #csv, ignore for the moment
+            if wave.startswith('"'):
+                continue
+            #inline definition
+            else:
+                m = re.search(r'(?P<function>\w+)\s?\((?P<arg1>\w+)[^\)]*\)', wave)
+                if m is not None:
+                    num_samples = int(m.group('arg1'))
+                    return num_samples
+                else:
+                    raise ValueError(f'Unknown waveform declaration! "{wave:s}"')
+
+        #no luck with inline, try with csv
+        for wave in waves:
+            if wave.startswith('"'):
+                num_samples = count_lines_csv(wave.strip('"'))
+                return num_samples
+
+        raise ValueError(f'No valid waveform in this block: {waves:s}')    
+    
+    #create the affected output list
+    output_correction = [f(x) for x in cores for f in (lambda i:2*i+1,lambda i:2*i+2)]
+    
+    #create playwave list
+    pws = []
+    for l in seqc.split('\n'):
+        if (l.strip().startswith('playWave')):
+            w = get_waves(l)
+            pws.append(w)
+
+    pws_index = {pw: i for i,pw in enumerate(pws)}
+    
+    #create anti-optimization tags
+    tag_declarations = ""
+    for i in range(len(pws)):
+        tag = f"{i+1:016b}".replace('1','2')
+        rle_tag = [(k,len(list(g))) for k, g in itertools.groupby(tag)]
+        #tag_v = ",".join(['marker(1,2)' if t == '1' else 'marker(1,0)' for t in tag])
+        tag_v = ",".join([f'marker({t[1]},{t[0]})' for t in rle_tag])
+
+        tag_v = f'wave tag{i:06d} = join({tag_v});\n'
+        tag_declarations += tag_v
+        
+    #create declaration of csv waves
+    csv_waves = set()
+    for pw in pws:
+        for wave in pw[1::2]:
+            if wave[0] == '"':
+                csv_waves.add(wave.strip('"'))
+
+    csv_declarations = ""
+    for wave in csv_waves:
+        decl = f'wave {wave} = "{wave}";\n'
+        csv_declarations += decl
+    
+    #do the correction
+    res = ''
+    wave_num = 0
+    
+    prefetched_size = 0
+    prefetches = ""
+    
+    for l in seqc.split('\n'):
+        if (l.strip().startswith('playWave')):
+            w = get_waves(l)
+
+
+            tag = "tag{:06d}".format(wave_num)
+            w2 = []
+            for i,it in enumerate(w):
+                if (i % 2) == 1:
+                    if it[0] == '"':
+                        it = it.strip('"')
+                    if int(w[i-1]) in output_correction:
+                        it += f"+{tag}"
+                w2.append(it)
+            waves_c = ",".join(w2)
+            res += f"playWave({waves_c});\n"
+            
+            wave_num += 1
+            
+            if prefetched_size < 8192:
+                prefetches += f"prefetch({waves_c});\n"
+                prefetched_size += calculate_len_grouped(w[1::2])
+
+        else:
+            res += l + '\n'
+                
+    return tag_declarations + csv_declarations + prefetches + res
+
 def correct_sequence(seqc):
     """ Correct a ZI HDAWG8 seqc program so that all cores are treated equaly """
     #extract waves from a playWave command and return them as tuple
@@ -131,7 +244,7 @@ class HDAWGRepresentation:
     """HDAWGRepresentation represents an HDAWG8 instruments and manages a LabOne data server api session. A data server
     must be running and the device be discoverable. Channels are per default grouped into pairs."""
 
-    __version__ = 0.3
+    __version__ = 0.4
     
     def __init__(self, device_serial: str = None,
                  device_interface: str = '1GbE',
@@ -458,8 +571,14 @@ class HDAWGChannelGroup(AWG):
         self._awg_sequence=awg_sequence
         
         if self.transform_zi_seqc:
-               logger.info('HDAWGProgramManager.register: transform seqc')
-               awg_sequence = correct_sequence(awg_sequence)
+               logger.info('HDAWGProgramManager.upload: transform seqc')
+               print(f'# HDAWGProgramManager.upload: transform seqc code correction {self.transform_zi_seqc}')
+               if self.transform_zi_seqc==1:
+                   awg_sequence = correct_sequence(awg_sequence)
+               elif self.transform_zi_seqc==2:
+                   awg_sequence = correct_sequence_v2(awg_sequence)
+               else:
+                   raise Exception(f'transform_zi_seqc {self.transform_zi_seqc} is not valid')
 
         self._upload_sourcestring(awg_sequence)
         logger.info(f'HDAWGChannelPair: upload complete {time.time()-t0:.2f} [s]')
