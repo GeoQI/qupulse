@@ -1048,7 +1048,7 @@ class HDAWGProgramManager:
 
 
         no_marker=np.all(mk_names)
-        do_wait =  number_of_samples>play_samples_0+(4)*8 and all_constant and ( (number_of_samples-play_samples_0) %(32)==0) # allow almost everything
+        do_wait =  number_of_samples>play_samples_0+(4)*8 and all_constant and ( (number_of_samples-play_samples_0) %(8)==0) # allow almost everything
         #do_wait =  number_of_samples>2000 and np.all(wave_constant) and ( (number_of_samples) %(32*4)==0)
         do_wait=do_wait and self.do_wait_count>=0
 
@@ -1073,11 +1073,8 @@ class HDAWGProgramManager:
             sample_factor=1
             wfactor=8
             play_samples = play_samples_0
-            wait_samples = ( number_of_samples-play_samples)/wfactor - 3
+            wait_samples = (number_of_samples)/wfactor - 3
             
-            if 0:
-                   play_samples=int(number_of_samples-32*8*4)
-                   wait_samples = ( number_of_samples-play_samples)/wfactor
             
             logger.debug(f'   waveform is constant over all channels, using wait statement play_samples {play_samples}, wait_samples {wait_samples}')
             wait_samples=int(wait_samples)
@@ -1158,14 +1155,6 @@ class HDAWGProgramManager:
                    combined_name_m = generate_wave_tag(mk_name, constant_marker_value, return_name)              
                    if combined_name is None:
                           combined_name=combined_name_m
-                          #combined_name='""' 
-#                   nn=int(number_of_samples/sample_factor)
-#                   if do_wait:
-#                          nn=play_samples
-#                   if is_zero:
-#                          combined_name=f'zeros({nn})'                   
-#                   else:
-#                     combined_name=f'rect({nn}, {constant_wave_value})'
             elif mk_name is not None and wf_name is not None:
                    combined_name1 = generate_wave_tag(wf_name, constant_wave_value, return_name)             
                    combined_name2 = generate_wave_tag(mk_name, constant_marker_value, return_name)              
@@ -1243,8 +1232,6 @@ class HDAWGProgramManager:
             case_block.append(self.case_wrap_program(entry, name))
         return '\n'.join(case_block)
 
-    # TODO: Make sure waitWave is really not required.
-    # TODO: Is prefetching useful?
     # Structure of sequencer program.
     sequencer_template_old = textwrap.dedent("""\
         //////////  qupulse sequence (_upload_time_) //////////
