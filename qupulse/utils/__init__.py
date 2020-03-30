@@ -1,5 +1,8 @@
-from typing import Union, Iterable, Any, Tuple
+from typing import Union, Iterable, Any, Tuple, Mapping
 import itertools
+import re
+import numbers
+from collections import OrderedDict
 
 import numpy
 
@@ -9,7 +12,7 @@ except ImportError:
     # py version < 3.5
     isclose = None
 
-__all__ = ["checked_int_cast", "is_integer", "isclose", "pairwise"]
+__all__ = ["checked_int_cast", "is_integer", "isclose", "pairwise", "replace_multiple"]
 
 
 def checked_int_cast(x: Union[float, int, numpy.ndarray], epsilon: float=1e-6) -> int:
@@ -24,7 +27,7 @@ def checked_int_cast(x: Union[float, int, numpy.ndarray], epsilon: float=1e-6) -
     return int_x
 
 
-def is_integer(x: Union[float, int], epsilon: float=1e-6) -> bool:
+def is_integer(x: numbers.Real, epsilon: float=1e-6) -> bool:
     return abs(x - int(round(x))) < epsilon
 
 
@@ -53,3 +56,16 @@ def pairwise(iterable: Iterable[Any],
     a, b = itertools.tee(iterable)
     next(b, None)
     return zip_function(a, b, **kwargs)
+
+
+def replace_multiple(s: str, replacements: Mapping[str, str]) -> str:
+    """Replace multiple strings at once. If multiple replacements overlap the precedence is given by the order in
+    replacements.
+
+    For pyver >= 3.6 (otherwise use OrderedDict)
+    >>> assert replace_multiple('asdf', {'asd': '1', 'asdf', '2'}) == 'asd1'
+    >>> assert replace_multiple('asdf', {'asdf': '2', 'asd', '1'}) == '2'
+    """
+    rep = OrderedDict((re.escape(k), v) for k, v in replacements.items())
+    pattern = re.compile("|".join(rep.keys()))
+    return pattern.sub(lambda m: rep[re.escape(m.group(0))], s)

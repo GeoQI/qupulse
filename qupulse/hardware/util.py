@@ -4,7 +4,8 @@ import itertools
 import numpy as np
 
 from qupulse._program.waveforms import Waveform
-from qupulse.utils.types import TimeType
+from qupulse.utils.types import TimeType, Collection
+from qupulse.utils import pairwise
 
 __all__ = ['voltage_to_uint16', 'get_sample_times']
 
@@ -92,7 +93,7 @@ def find_positions(data: Sequence, to_find: Sequence) -> np.ndarray:
     return positions
 
 
-def get_sample_times(waveforms: Union[Sequence[Waveform], Waveform],
+def get_sample_times(waveforms: Union[Collection[Waveform], Waveform],
                      sample_rate_in_GHz: TimeType, tolerance: float = 1e-10, return_time_array= True) -> Tuple[np.array, np.array]:
     """Calculates the sample times required for the longest waveform in waveforms and returns it together with an array
     of the lengths.
@@ -110,8 +111,8 @@ def get_sample_times(waveforms: Union[Sequence[Waveform], Waveform],
         Array of sample times sufficient for the longest waveform
         Number of samples of each waveform
     """
-    if not isinstance(waveforms, Sequence):
-        sample_times, n_samples = get_sample_times([waveforms], sample_rate_in_GHz, return_time_array=return_time_array)
+    if not isinstance(waveforms, Collection):
+        sample_times, n_samples = get_sample_times([waveforms], sample_rate_in_GHz)
         return sample_times, n_samples.squeeze()
 
     assert len(waveforms) > 0, "An empty waveform list is not allowed"

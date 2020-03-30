@@ -214,7 +214,7 @@ class TektronixProgram:
                                                                    offsets=self._offsets)
 
     def get_sequencing_elements(self) -> Sequence[tek_awg.SequenceEntry]:
-        """The entries are either of type TekAwh.Waveform or integers which signal an idle waveform of this length"""
+        """The entries are either of type TekAwg.Waveform or integers which signal an idle waveform of this length"""
         return self._sequencing_elements
 
     def get_waveforms(self) -> Sequence[Union[tek_awg.Waveform, int]]:
@@ -321,6 +321,9 @@ class TektronixAWG(AWG):
             raise ValueError('synchronize must be one of ["clear", "read"]')
 
         self.initialize_idle_program()
+
+    def set_volatile_parameters(self, program_name: str, parameters):
+        raise NotImplementedError()
 
     @staticmethod
     def _validate_program_repetition_code(mode: str):
