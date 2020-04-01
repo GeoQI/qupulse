@@ -105,7 +105,12 @@ def iter_instruction_block(instruction_block: AbstractInstructionBlock,
 
     return waveforms, measurements, time
 
-
+def any_nan(a):
+           """ Return True of any element of the array is NaN """
+           if np.array(a).size == 0:
+               return False
+           return np.isnan(np.min(a)) 
+       
 def render(program: Union[AbstractInstructionBlock, Loop],
            sample_rate: Real = 10.0,
            render_measurements: bool = False,
@@ -173,11 +178,15 @@ def render(program: Union[AbstractInstructionBlock, Loop],
     times = np.linspace(float(start_time), float(end_time), num=int(sample_count), dtype=float)
     times[-1] = np.nextafter(times[-1], times[-2])
 
-    voltages = {ch: np.empty_like(times)
+    voltages = {ch: np.empty_like(times)+np.NaN
                 for ch in channels}
     for ch, ch_voltage in voltages.items():
+        voltages[ch][:]=np.NaN
         waveform.get_sampled(channel=ch, sample_times=times, output_array=ch_voltage)
 
+        if any_nan(ch_voltage):
+                import warnings
+                warnings.warn('array should have been filled with data!')
     return times, voltages, measurements
 
 

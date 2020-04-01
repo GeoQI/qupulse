@@ -19,6 +19,12 @@ from qupulse.expressions import ExpressionScalar
 from qupulse.pulses.interpolation import InterpolationStrategy
 from qupulse._program.transformation import Transformation
 
+def any_nan(a):
+           """ Return True of any element of the array is NaN """
+           if np.array(a).size == 0:
+               return False
+           return np.isnan(np.min(a)) 
+
 
 __all__ = ["Waveform", "TableWaveform", "TableWaveformEntry", "FunctionWaveform", "SequenceWaveform",
            "MultiChannelWaveform", "RepetitionWaveform", "TransformingWaveform"]
@@ -209,12 +215,19 @@ class TableWaveform(Waveform):
                       output_array: Union[np.ndarray, None]=None) -> np.ndarray:
         if output_array is None:
             output_array = np.empty_like(sample_times)
+            output_array[:]=np.NaN
+        else:
+            print('tablewaveform: pre-filled output_array')
 
         for entry1, entry2 in zip(self._table[:-1], self._table[1:]):
             indices = slice(np.searchsorted(sample_times, entry1.t, 'left'),
                             np.searchsorted(sample_times, entry2.t, 'right'))
             output_array[indices] = \
                 entry2.interp((entry1.t, entry1.v), (entry2.t, entry2.v), sample_times[indices])
+             
+        if any_nan(output_array):
+            import warnings
+            warnings.warn(f'aray should have been filled! sample_times[-1] {sample_times[-1]} ')
         return output_array
 
     @property
@@ -310,6 +323,8 @@ class SequenceWaveform(Waveform):
                       output_array: Union[np.ndarray, None]=None) -> np.ndarray:
         if output_array is None:
             output_array = np.empty_like(sample_times)
+            output_array[:]=np.NaN
+
         time = 0
         for subwaveform in self._sequenced_waveforms:
             # before you change anything here, make sure to understand the difference between basic and advanced
@@ -321,6 +336,11 @@ class SequenceWaveform(Waveform):
                                       sample_times=sample_times[indices]-np.float64(time),
                                       output_array=output_array[indices])
             time = end
+
+        if any_nan(output_array):
+            import warnings
+            warnings.warn('aray should have been filled! random data to screen or to AWG!')
+
         return output_array
 
     @property
@@ -474,6 +494,8 @@ class RepetitionWaveform(Waveform):
                       output_array: Union[np.ndarray, None]=None) -> np.ndarray:
         if output_array is None:
             output_array = np.empty_like(sample_times)
+            output_array[:]=np.NaN
+
         body_duration = self._body.duration
         time = 0
         for _ in range(self._repetition_count):
@@ -483,6 +505,11 @@ class RepetitionWaveform(Waveform):
                                      sample_times=sample_times[indices] - time,
                                      output_array=output_array[indices])
             time = end
+
+        if any_nan(output_array):
+            import warnings
+            warnings.warn('aray should have been filled!')
+            
         return output_array
 
     @property
