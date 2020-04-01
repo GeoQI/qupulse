@@ -10,6 +10,7 @@ from weakref import WeakValueDictionary, ref
 from typing import Union, Set, Sequence, NamedTuple, Tuple, Any, Iterable, FrozenSet, Optional
 
 import numpy as np
+import logging
 
 from qupulse import ChannelID
 from qupulse.utils import checked_int_cast, isclose
@@ -217,7 +218,7 @@ class TableWaveform(Waveform):
             output_array = np.empty_like(sample_times)
             output_array[:]=np.NaN
         else:
-            print('tablewaveform: pre-filled output_array')
+            logging.debug('TableWaveform: pre-filled output_array')
 
         for entry1, entry2 in zip(self._table[:-1], self._table[1:]):
             indices = slice(np.searchsorted(sample_times, entry1.t, 'left'),
@@ -227,7 +228,8 @@ class TableWaveform(Waveform):
              
         if any_nan(output_array):
             import warnings
-            warnings.warn(f'aray should have been filled! sample_times[-1] {sample_times[-1]} ')
+            number_of_nan=np.isnan(output_array).sum()
+            warnings.warn(f'aray should have been filled! number_of_nan {number_of_nan}, sample_times[-1] {sample_times[-1]} ')
         return output_array
 
     @property
@@ -339,7 +341,8 @@ class SequenceWaveform(Waveform):
 
         if any_nan(output_array):
             import warnings
-            warnings.warn('aray should have been filled! random data to screen or to AWG!')
+            number_of_nan=np.isnan(output_array).sum()
+            warnings.warn(f'aray should have been filled! number_of_nan {number_of_nan},  random data to screen or to AWG!')
 
         return output_array
 
@@ -508,7 +511,9 @@ class RepetitionWaveform(Waveform):
 
         if any_nan(output_array):
             import warnings
-            warnings.warn('aray should have been filled!')
+            number_of_nan=np.isnan(output_array).sum()
+            warnings.warn(f'aray should have been filled! number_of_nan {number_of_nan},  random data to screen or to AWG!')
+
             
         return output_array
 

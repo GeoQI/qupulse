@@ -8,6 +8,7 @@ Functions:
 
 from typing import Dict, Tuple, Any, Generator, Optional, Set, List, Union
 from numbers import Real
+import warnings
 
 import numpy as np
 import warnings
@@ -185,7 +186,6 @@ def render(program: Union[AbstractInstructionBlock, Loop],
         waveform.get_sampled(channel=ch, sample_times=times, output_array=ch_voltage)
 
         if any_nan(ch_voltage):
-                import warnings
                 warnings.warn('array should have been filled with data!')
     return times, voltages, measurements
 

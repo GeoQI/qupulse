@@ -29,6 +29,12 @@ from qupulse._program.waveforms import Waveform
 from qupulse.hardware.awgs.base import AWG, ChannelNotFoundException
 from qupulse.hardware.util import get_sample_times
 
+def any_nan(a):
+           """ Return True of any element of the array is NaN """
+           if np.array(a).size == 0:
+               return False
+           return np.isnan(np.min(a)) 
+       
 def correct_sequence_v2(seqc,cores=[0,1,2,3]):
     #extract waves from a playWave command and return them as tuple
     def get_waves(line):
@@ -852,6 +858,8 @@ class HDAWGWaveManager:
     def volt_to_amp(self, volt: np.ndarray, rng: float, offset: float) -> np.ndarray:
         """Scale voltage pulse data to dimensionless -1..1 amplitude of full range. If out of range throw error."""
         # TODO: Is offset included or excluded from rng?
+        if any_nan(volt):
+            warnings.warn('sending a NaN to the HDAWG8!')
         if np.any(np.abs(volt-offset) > (rng/2)):
             max_volt = np.max(np.abs(volt-offset))
             raise HDAWGValueError(f'Voltage {max_volt} out of range {rng} = amplitude {rng/2}')
