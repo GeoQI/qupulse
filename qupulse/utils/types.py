@@ -21,9 +21,18 @@ try:
     import gmpy2
     TimeType = gmpy2.mpq
 
+    import math
+    def f2q(value, absolute_error):
+        # HACK because the gmpy2.f2q values for float 2.50000000000008
+        fraction=gmpy2.f2q(value, absolute_error)
+        if math.fabs(float(fraction)-value)> 1e-6:
+            fraction=gmpy2.f2q(10*value+10, absolute_error)*gmpy2.mpq(1,10)-gmpy2.mpq(1,1)
+        return fraction
+
     def time_from_float(time: float, absolute_error: float=1e-12) -> TimeType:
         # gmpy2 is at least an order of magnitude faster than fractions.Fraction
-        return gmpy2.mpq(gmpy2.f2q(time, absolute_error))
+        return gmpy2.mpq(f2q(time, absolute_error))
+        #return gmpy2.mpq(gmpy2.f2q(time, absolute_error))
 
     def time_from_fraction(numerator: int, denominator: int = 1) -> TimeType:
         return gmpy2.mpq(numerator, denominator)

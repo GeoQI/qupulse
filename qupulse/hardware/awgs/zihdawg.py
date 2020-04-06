@@ -1009,7 +1009,7 @@ class HDAWGWaveManager:
         for idx, channel in enumerate(channels):
             qupulse_channel_name = channel
             qupulse_marker_name = markers[idx]
-            zi_channel_idx = idx+1
+            zi_channel_idx = idx+1 # zi_channel_idx starts counting at 1
             
             if qupulse_channel_name is None and qupulse_marker_name is None:
                 continue
