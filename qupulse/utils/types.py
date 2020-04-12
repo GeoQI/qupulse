@@ -27,6 +27,8 @@ try:
         fraction=gmpy2.f2q(value, absolute_error)
         if math.fabs(float(fraction)-value)> 1e-6:
             fraction=gmpy2.f2q(10*value+10, absolute_error)*gmpy2.mpq(1,10)-gmpy2.mpq(1,1)
+            if math.fabs(float(fraction)-value)> 1e-6:
+                print('error: could not approximate float with fraction!')
         return fraction
 
     def time_from_float(time: float, absolute_error: float=1e-12) -> TimeType:
