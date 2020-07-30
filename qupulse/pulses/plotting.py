@@ -91,7 +91,7 @@ def render(program: Union[Loop],
     times = np.linspace(float(start_time), float(end_time), num=int(sample_count), dtype=float)
     times[-1] = np.nextafter(times[-1], times[-2])
 
-    voltages = {ch: np.empty_like(times) + np.NaN
+    voltages = {ch: np.empty_like(times) * np.NaN
                 for ch in channels}
     for ch, ch_voltage in voltages.items():
         waveform.get_sampled(channel=ch, sample_times=times, output_array=ch_voltage)

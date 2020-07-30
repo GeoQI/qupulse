@@ -24,6 +24,8 @@ from qupulse._program.transformation import Transformation
 __all__ = ["Waveform", "TableWaveform", "TableWaveformEntry", "FunctionWaveform", "SequenceWaveform",
            "MultiChannelWaveform", "RepetitionWaveform", "TransformingWaveform", "ArithmeticWaveform"]
 
+PULSE_TO_WAVEFORM_ERROR = 1e-8 # error margin in pulse template to waveform conversion
+
 def any_nan(a):
            """ Return True of any element of the array is NaN """
            if np.array(a).size == 0:
@@ -213,7 +215,7 @@ class TableWaveform(Waveform):
 
     @property
     def duration(self) -> TimeType:
-        return TimeType.from_float(self._table[-1].t, absolute_error=1e-10)
+        return TimeType.from_float(self._table[-1].t, absolute_error=PULSE_TO_WAVEFORM_ERROR)
 
     def unsafe_sample(self,
                       channel: ChannelID,
@@ -268,7 +270,7 @@ class FunctionWaveform(Waveform):
             raise ValueError('FunctionWaveforms may not depend on anything but "t"')
 
         self._expression = expression
-        self._duration = TimeType.from_float(duration)
+        self._duration = TimeType.from_float(duration, absolute_error = PULSE_TO_WAVEFORM_ERROR)
         self._channel_id = channel
 
     @property
