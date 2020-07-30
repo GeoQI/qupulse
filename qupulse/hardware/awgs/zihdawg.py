@@ -251,7 +251,7 @@ class HDAWGRepresentation:
     """HDAWGRepresentation represents an HDAWG8 instruments and manages a LabOne data server api session. A data server
     must be running and the device be discoverable. Channels are per default grouped into pairs."""
 
-    __version__ = 0.5
+    __version__ = 0.51
     
     def __init__(self, device_serial: str = None,
                  device_interface: str = '1GbE',
@@ -259,7 +259,7 @@ class HDAWGRepresentation:
                  data_server_port: int = 8004,
                  api_level_number: int = 6,
                  reset: bool = False,
-                 timeout: float = 120,
+                 timeout: float = 160,
                  channel_grouping = HDAWGChannelGrouping.CHAN_GROUP_4x2,
                  sample_rate_index = 0,
                  voltage_range=HDAWGVoltageRange.RNG_1V.value) -> None:
@@ -303,8 +303,8 @@ class HDAWGRepresentation:
                 HDAWGChannelGroup(self, range(1, 9), str(self.serial) + '_full', timeout),
             )
         else:
-            # FIXME: raise exception
             self._channel_groups = ()
+            raise Exception(f'unknown channel grouping {channel_grouping}')
 
         self._initialize()
 
@@ -601,6 +601,19 @@ class HDAWGChannelGroup(AWG):
         self.awg_module.set('awgModule/compiler/sourcestring', sourcestring)
         self._poll_compile_and_upload_finished(logger)
 
+    def sequencer_status(self):
+        """
+            Status of the sequencer on the instrument. Bit 0: sequencer is running; Bit 1: reserved; Bit 2:
+            sequencer is waiting for a) waveform playback to finish, b) prefetch to finish, or c) trigger to arrive;
+            Bit 3: AWG has detected an error
+        """
+        self.awg_module.getInt('awgModule/sequencer/status')
+        #self.awg_module.getInt('awgModule/sequencer/status')
+        
+        #daq=station.DEV8049.daq
+        #daq.getDouble('/DEV8049/AWGS/0/WAVEFORM/MEMORYUSAGE')
+        #/DEV..../AWGS/n/WAVEFORM/MEMORYUSAGE
+        
     def _poll_compile_and_upload_finished(self, logger: logging.Logger) -> None:
         """Blocks till compilation on data server and upload to HDAWG succeed,
         if process takes less time than timeout."""
@@ -618,7 +631,8 @@ class HDAWGChannelGroup(AWG):
                 time.sleep(0.1)
             
         if time.time() - time_start > self._timeout:
-            raise HDAWGTimeoutError("Compilation timeout out")
+            compiler_status = self.awg_module.getInt('awgModule/compiler/status')
+            raise HDAWGTimeoutError(f"Compilation timeout out (compiler_status {compiler_status})")
 
         if self.awg_module.getInt('awgModule/compiler/status') == 1:
             msg = self.awg_module.getString('awgModule/compiler/statusstring')
@@ -626,7 +640,7 @@ class HDAWGChannelGroup(AWG):
             raise HDAWGCompilationException(msg)
 
         if self.awg_module.getInt('awgModule/compiler/status') == 0:
-            logger.info('Compilation successful')
+            logger.info('Compilation successful, took {:.3f} seconds'.format(time.time()-time_start))
         if self.awg_module.getInt('awgModule/compiler/status') == 2:
             msg = self.awg_module.getString('awgModule/compiler/statusstring')
             logger.warning(msg)
@@ -634,11 +648,11 @@ class HDAWGChannelGroup(AWG):
         i = 0
         while ((self.awg_module.getDouble('awgModule/progress') < 1.0) and
                (self.awg_module.getInt('awgModule/elf/status') != 1)):
-            time.sleep(0.2)
+            time.sleep(0.3)
             logger.info("{} awgModule/progress: {:.2f}".format(i, self.awg_module.getDouble('awgModule/progress')))
             i = i + 1
             if time.time() - time_start > self._timeout:
-                raise HDAWGTimeoutError("Upload timeout out after {self._timeout} seconds")
+                raise HDAWGTimeoutError(f"Upload timeout out after {self._timeout} seconds")
         logger.info("{} awgModule/progress: {:.2f}".format(i, self.awg_module.getDouble('awgModule/progress')))
 
         if self.awg_module.getInt('awgModule/elf/status') == 0:

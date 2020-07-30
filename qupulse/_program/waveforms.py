@@ -229,8 +229,7 @@ class TableWaveform(Waveform):
         if any_nan(output_array):
             import warnings
             number_of_nan=np.isnan(output_array).sum()
-            #warnings.warn(f'array should have been filled! number_of_nan {number_of_nan}, sample_times[-1] {sample_times[-1]} ')
-            print(f'# bug in tablewaveform: random data in waveform, duration {self.duration}, last time {self._table[-1].t} last sample time {sample_times[-1]}')
+            print(f'# tablewaveform bug: random data in waveform, duration {self.duration}') # , last time {self._table[-1].t} last sample time {sample_times[-1]}')
             if np.isnan(output_array[-1]):
                 output_array[-1]=self._table[-1].v
                     
