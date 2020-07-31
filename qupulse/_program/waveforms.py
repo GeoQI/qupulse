@@ -9,7 +9,7 @@ from abc import ABCMeta, abstractmethod
 from weakref import WeakValueDictionary, ref
 from typing import Union, Set, Sequence, NamedTuple, Tuple, Any, Iterable, FrozenSet, Optional, Mapping, AbstractSet
 import operator
-
+import logging
 import numpy as np
 
 from qupulse import ChannelID
@@ -24,6 +24,13 @@ from qupulse._program.transformation import Transformation
 __all__ = ["Waveform", "TableWaveform", "TableWaveformEntry", "FunctionWaveform", "SequenceWaveform",
            "MultiChannelWaveform", "RepetitionWaveform", "TransformingWaveform", "ArithmeticWaveform"]
 
+PULSE_TO_WAVEFORM_ERROR = 1e-8 # error margin in pulse template to waveform conversion
+
+def any_nan(a):
+           """ Return True of any element of the array is NaN """
+           if np.array(a).size == 0:
+               return False
+           return np.isnan(np.min(a))
 
 class Waveform(Comparable, metaclass=ABCMeta):
     """Represents an instantiated PulseTemplate which can be sampled to retrieve arrays of voltage
@@ -208,7 +215,7 @@ class TableWaveform(Waveform):
 
     @property
     def duration(self) -> TimeType:
-        return TimeType.from_float(self._table[-1].t, absolute_error=1e-10)
+        return TimeType.from_float(self._table[-1].t, absolute_error=PULSE_TO_WAVEFORM_ERROR)
 
     def unsafe_sample(self,
                       channel: ChannelID,
@@ -216,12 +223,23 @@ class TableWaveform(Waveform):
                       output_array: Union[np.ndarray, None]=None) -> np.ndarray:
         if output_array is None:
             output_array = np.empty_like(sample_times)
+            output_array[:]=np.NaN
+        else:
+            logging.debug('TableWaveform: pre-filled output_array')
 
         for entry1, entry2 in zip(self._table[:-1], self._table[1:]):
             indices = slice(np.searchsorted(sample_times, entry1.t, 'left'),
                             np.searchsorted(sample_times, entry2.t, 'right'))
             output_array[indices] = \
                 entry2.interp((entry1.t, entry1.v), (entry2.t, entry2.v), sample_times[indices])
+
+
+        if any_nan(output_array):
+            number_of_nan=np.isnan(output_array).sum()
+            print(f'# tablewaveform bug: random data in waveform, duration {self.duration}, number_of_nan {number_of_nan}') # , last time {self._table[-1].t} last sample time {sample_times[-1]}')
+            if np.isnan(output_array[-1]):
+                output_array[-1]=self._table[-1].v
+
         return output_array
 
     @property
@@ -252,7 +270,7 @@ class FunctionWaveform(Waveform):
             raise ValueError('FunctionWaveforms may not depend on anything but "t"')
 
         self._expression = expression
-        self._duration = TimeType.from_float(duration)
+        self._duration = TimeType.from_float(duration, absolute_error = PULSE_TO_WAVEFORM_ERROR)
         self._channel_id = channel
 
     @property

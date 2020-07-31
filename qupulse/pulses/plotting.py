@@ -23,7 +23,12 @@ from qupulse._program._loop import Loop, to_waveform
 
 __all__ = ["render", "plot", "PlottingNotPossibleException"]
 
-
+def any_nan(a):
+           """ Return True of any element of the array is NaN """
+           if np.array(a).size == 0:
+               return False
+           return np.isnan(np.min(a)) 
+       
 def render(program: Union[Loop],
            sample_rate: Real = 10.0,
            render_measurements: bool = False,
@@ -86,11 +91,14 @@ def render(program: Union[Loop],
     times = np.linspace(float(start_time), float(end_time), num=int(sample_count), dtype=float)
     times[-1] = np.nextafter(times[-1], times[-2])
 
-    voltages = {ch: np.empty_like(times)
+    voltages = {ch: np.empty_like(times) * np.NaN
                 for ch in channels}
     for ch, ch_voltage in voltages.items():
         waveform.get_sampled(channel=ch, sample_times=times, output_array=ch_voltage)
 
+        if any_nan(ch_voltage):
+                        warnings.warn('array should have been filled with data!')
+                
     return times, voltages, measurements
 
 
