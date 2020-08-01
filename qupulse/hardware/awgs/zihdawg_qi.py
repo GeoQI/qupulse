@@ -779,6 +779,7 @@ class HDAWGChannelGroup(AWG):
 HDAWGChannelPair = HDAWGChannelGroup
 
 def is_constant_waveform(waveform, verbose=0):
+              """ Return from if a qupulse waveform is consists of a MultiChannelWaveform with constant channels """
               import sqt.utils.qupulse_utils
               if isinstance(waveform, MultiChannelWaveform):
                      for subwave in waveform._sub_waveforms:
@@ -789,9 +790,9 @@ def is_constant_waveform(waveform, verbose=0):
                                    if verbose:
                                           print(f'is_constant_waveform: table entries {vv}')
                             elif isinstance(subwave, sqt.utils.qupulse_utils.ConstantWaveform):
-                                   return True
+                                   continue
                             elif getattr(subwave, '_is_constant_waveform', False):
-                                   return True
+                                   continue
                             else:
                                    return False
                      return True
@@ -940,8 +941,11 @@ class HDAWGWaveManager:
 
             is_zero_wave=np.all(amplitude==0)
             is_constant_wave=np.allclose(amplitude,np.mean(amplitude))
-            #print(amplitude-np.mean(amplitude))
-            constant_wave_value=np.mean(amplitude)
+
+            if is_constant_wave:
+                constant_wave_value=np.mean(amplitude)
+            else:
+                constant_wave_value=np.NaN
 
             if overwrite or not self.full_file_path(wave_name).exists():# and not is_constant_wave:
                 if write_constant or not is_constant_wave:
@@ -985,7 +989,11 @@ class HDAWGWaveManager:
 
             is_zero_marker = np.all(marker_output==0)
             is_constant_marker=np.allclose(marker_output,np.mean(marker_output))
-            constant_marker_value=np.mean(marker_output)
+
+            if is_constant_marker:
+                constant_marker_value=np.mean(marker_output)
+            else:
+                constant_marker_value = np.NaN
 
             if overwrite or not self.full_file_path(marker_name).exists():# and not is_constant_marker:
                 if write_constant or not is_constant_marker:
@@ -1001,6 +1009,7 @@ class HDAWGWaveManager:
 
 
         metadata = {'is_zero': is_zero_wave and is_zero_marker, 'is_constant': is_constant_wave and is_constant_marker,
+                    'is_constant_wave': is_constant_wave, 'is_constant_marker': is_constant_marker,
                     'constant_wave_value': constant_wave_value, 'constant_marker_value':constant_marker_value,
                     'number_of_samples': n_samples, 'number_of_samples_reduced': n_samples_reduced}
 
@@ -1027,7 +1036,7 @@ class HDAWGWaveManager:
 
             if qupulse_channel_name is None and qupulse_marker_name is None:
                 continue
-            logger.debug(f'register_single_channels: register template channel {channel} to physical channel {idx+1} (duration {float(waveform.duration):2f} [ns]')
+            logger.debug(f'register_single_channels: register template channel {channel} with marker {qupulse_marker_name} to physical channel {idx+1} (duration {float(waveform.duration):2f} [ns]')
 
             marker = markers[idx]
             (wave_name, marker_name, metadata) = self.register(waveform,
@@ -1189,7 +1198,7 @@ class HDAWGProgramManager:
 
 
 
-        no_marker=np.all(mk_names)
+        #no_marker=np.all(mk_names)
         do_wait =  number_of_samples>play_samples_0+(4)*8 and all_constant and ( (number_of_samples-play_samples_0) %(8)==0) # allow almost everything
         #do_wait =  number_of_samples>2000 and np.all(wave_constant) and ( (number_of_samples) %(32*4)==0)
         do_wait=do_wait and self.do_wait_count>=0
@@ -1248,17 +1257,18 @@ class HDAWGProgramManager:
                                                                        self._output_offset,
                                                                        self._overwrite,
                                                                        sample_factor=sample_factor)
-        for wave_data in registered_names:
+        for idx_registered_name, wave_data in enumerate(registered_names):
             wf_name, mk_name, channel_idx, qupulse_channel_name, metadata = wave_data
-            logger.debug(f'{wf_name}, {mk_name}, {channel_idx}: {metadata} defined_channel_idx {defined_channel_idx}')
+            logger.debug(f'registered_names[{idx_registered_name}]: {wf_name}, {mk_name}, {channel_idx}: {metadata} defined_channel_idx {defined_channel_idx}')
 
             is_zero=metadata.get('is_zero', False)
             is_constant=metadata.get('is_constant', False)
+            is_constant_wave=metadata.get('is_constant_wave', False)
             number_of_samples=metadata.get('number_of_samples', 0)
             constant_wave_value=metadata.get('constant_wave_value', None)
             constant_marker_value=metadata.get('constant_marker_value', None)
 
-            def generate_wave_tag(wf_name, constant_value, return_name=False):
+            def generate_wave_tag(wf_name, is_constant, constant_value, return_name=False):
                    if return_name:
                           if wf_name is None:
                                  return None
@@ -1276,6 +1286,27 @@ class HDAWGProgramManager:
                           if wf_name is None:
                                  return None
                           return '"' + wf_name +'"'
+            def generate_wave_tag_marker(wf_name, is_constant, constant_value, return_name=False):
+                   if return_name:
+                          if wf_name is None:
+                                 return None
+                          return '"' + wf_name +'"'
+                   if is_constant:
+                          #raise NotImplementedError(f'optimization for constant marker channel {wf_name}, is_zero {is_zero}, value {constant_value}')
+                          nn=int(number_of_samples/sample_factor)
+                          if do_wait:
+                                 nn=play_samples
+                          if is_zero:
+                                 x_name=f'marker({nn},0)'
+                          else:
+                            raise NotImplementedError('optimization for constant marker channel')
+                            x_name=f'marker({nn}, ?)'
+                          return x_name
+                   else:
+                          if wf_name is None:
+                                 return None
+                          return '"' + wf_name +'"'
+
             if self.allow_mixed_waveforms:
                    return_name=False
             else:
@@ -1293,18 +1324,19 @@ class HDAWGProgramManager:
                        # has to work over multiple cores...s
                      combined_name=f'""'
                 else:
-                   combined_name = generate_wave_tag(wf_name, constant_wave_value, return_name=return_name)
-                   combined_name_m = generate_wave_tag(mk_name, constant_marker_value, return_name)
+                   combined_name = generate_wave_tag(wf_name, is_constant_wave, constant_wave_value, return_name=return_name)
+                   combined_name_m = generate_wave_tag_marker(mk_name, is_constant, constant_marker_value, return_name)
+                   logger.debug(f'   zero waveform: combined_name {combined_name}, combined_name_m {combined_name_m}')
                    if combined_name is None:
                           combined_name=combined_name_m
             elif mk_name is not None and wf_name is not None:
-                   combined_name1 = generate_wave_tag(wf_name, constant_wave_value, return_name)
-                   combined_name2 = generate_wave_tag(mk_name, constant_marker_value, return_name)
+                   combined_name1 = generate_wave_tag(wf_name, is_constant_wave, constant_wave_value, return_name)
+                   combined_name2 = generate_wave_tag_marker(mk_name, is_constant, constant_marker_value, return_name)
                    combined_name = f'add({combined_name1}, {combined_name2})'
             elif mk_name is not None and wf_name is None:
-                   combined_name = generate_wave_tag(mk_name, constant_marker_value,return_name)
+                   combined_name = generate_wave_tag_marker(mk_name, is_constant, constant_marker_value,return_name)
             elif mk_name is None and wf_name is not None:
-                combined_name = generate_wave_tag(wf_name, constant_wave_value,return_name)
+                combined_name = generate_wave_tag(wf_name, is_constant_wave, constant_wave_value,return_name)
             else:
                 continue
 
@@ -1405,7 +1437,6 @@ class HDAWGProgramManager:
         //////////  qupulse sequence (_upload_time_) //////////
 
         // Start of analog waveform definitions.
-        wave idle = zeros(32); // Default idle waveform.
         _analog_waveform_block_
 
         // Start of marker waveform definitions.
