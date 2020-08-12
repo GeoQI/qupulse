@@ -1393,7 +1393,7 @@ class HDAWGProgramManager:
         # hack
         if 1:
                if len(self._known_programs.items())!=1:
-                      raise NotImplementedError('for multiple program suse the case blocks' )
+                      raise NotImplementedError('for multiple program use the case blocks' )
                code=''
                for prog_name, entry in self._known_programs.items():
                       code+=f'// {prog_name}\n'
