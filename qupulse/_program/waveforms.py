@@ -24,7 +24,7 @@ from qupulse._program.transformation import Transformation
 __all__ = ["Waveform", "TableWaveform", "TableWaveformEntry", "FunctionWaveform", "SequenceWaveform",
            "MultiChannelWaveform", "RepetitionWaveform", "TransformingWaveform", "ArithmeticWaveform"]
 
-PULSE_TO_WAVEFORM_ERROR = 1e-8 # error margin in pulse template to waveform conversion
+PULSE_TO_WAVEFORM_ERROR = 1e-6 # error margin in pulse template to waveform conversion
 
 def any_nan(a):
            """ Return True of any element of the array is NaN """
